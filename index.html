@@ -1,0 +1,1134 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agentic Session Simulator</title>
+<style>
+  :root {
+    --bg: #0a0c10; --bg-2: #0e1218; --panel: #11161f; --panel-2: #151b26;
+    --border: #1e2734; --border-2: #2a3546;
+    --fg: #d6deeb; --fg-dim: #8d9bb0; --fg-dimmer: #5d6b80;
+    --user: #7fb2ff; --queue: #f0a35e; --prefill: #4ec9ff; --decode: #6ee7a8;
+    --tool: #cf8bff; --warn: #ff7b7b;
+    --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  }
+  html[data-theme="light"] {
+    --bg: #f7f8fa; --bg-2: #eef1f5; --panel: #ffffff; --panel-2: #f2f5f9;
+    --border: #dde3ec; --border-2: #c6cfdd;
+    --fg: #1d2530; --fg-dim: #5c6a7d; --fg-dimmer: #8a97a8;
+    --user: #1f6feb; --queue: #b26a16; --prefill: #0b7bb5; --decode: #157f4a;
+    --tool: #8b3fc4; --warn: #c0392b;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg); font-family: var(--mono);
+    font-size: 13px; line-height: 1.55; display: flex; flex-direction: column; overflow: hidden;
+  }
+  .topbar {
+    display: flex; align-items: center; gap: 8px; padding: 8px 12px;
+    background: var(--bg-2); border-bottom: 1px solid var(--border);
+    flex: 0 0 auto; flex-wrap: wrap;
+  }
+  .brand { font-weight: 700; letter-spacing: .5px; white-space: nowrap; }
+  .brand em { color: var(--prefill); font-style: normal; }
+  select, input[type="number"], button {
+    font-family: inherit; font-size: 12px; color: var(--fg); background: var(--panel);
+    border: 1px solid var(--border-2); border-radius: 5px; padding: 4px 7px;
+  }
+  button { cursor: pointer; }
+  button:hover { border-color: var(--prefill); color: var(--prefill); }
+  button.primary { background: var(--prefill); border-color: var(--prefill); color: #06121a; font-weight: 700; min-width: 84px; }
+  button.primary:hover { filter: brightness(1.12); color: #06121a; }
+  input[type="number"] { width: 96px; }
+  input[type="checkbox"] { width: 15px; height: 15px; accent-color: var(--prefill); }
+  input[type="range"] { width: 100%; accent-color: var(--prefill); }
+  .spacer { flex: 1 1 auto; }
+  .clock { color: var(--fg-dim); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .clock b { color: var(--fg); font-weight: 600; }
+
+  .seek {
+    position: relative; height: 7px; flex: 1 1 120px; min-width: 90px;
+    background: var(--panel-2); border: 1px solid var(--border); border-radius: 4px; cursor: pointer;
+  }
+  .seek .buf { position: absolute; inset: 0 auto 0 0; border-radius: 4px; background: linear-gradient(90deg, var(--queue), var(--prefill) 35%, var(--decode)); width: 0; }
+  .seek .head { position: absolute; top: -2px; width: 2px; height: 11px; background: var(--fg); left: 0; }
+
+  .phases {
+    display: flex; gap: 8px; padding: 8px 12px; background: var(--bg-2);
+    border-bottom: 1px solid var(--border); flex: 0 0 auto; overflow-x: auto;
+  }
+  .chip {
+    flex: 1 1 0; min-width: 172px; border: 1px solid var(--border); border-radius: 6px;
+    background: var(--panel); padding: 5px 9px 8px; position: relative; overflow: hidden;
+    opacity: .42; transition: opacity .12s ease, border-color .12s ease;
+  }
+  .chip.on { opacity: 1; border-color: var(--c); }
+  .chip .k { font-size: 10px; letter-spacing: 1.4px; color: var(--c); text-transform: uppercase; }
+  .chip .v { font-size: 11px; color: var(--fg-dim); font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .chip .fill { position: absolute; left: 0; bottom: 0; height: 2px; width: 0; background: var(--c); }
+  .chip[data-phase="queue"]   { --c: var(--queue); }
+  .chip[data-phase="prefill"] { --c: var(--prefill); }
+  .chip[data-phase="decode"]  { --c: var(--decode); }
+  .chip[data-phase="tool"]    { --c: var(--tool); }
+  .chip.on .fill { box-shadow: 0 0 8px var(--c); }
+  .chip.on .k::after { content: " ●"; }
+
+  main { flex: 1 1 auto; display: flex; min-height: 0; }
+  .transcript { flex: 1 1 auto; overflow-y: auto; padding: 18px 22px 26vh; }
+  .panel {
+    width: 372px; flex: 0 0 372px; border-left: 1px solid var(--border);
+    background: var(--bg-2); overflow-y: auto; padding: 10px;
+  }
+  body.no-panel .panel { display: none; }
+
+  .msg { margin: 0 0 14px; opacity: 0; }
+  .msg.shown { opacity: 1; }
+  .tag {
+    font-size: 10px; letter-spacing: 1.3px; text-transform: uppercase; color: var(--fg-dimmer);
+    margin-bottom: 3px; display: flex; gap: 8px; align-items: baseline;
+  }
+  .tag .rt { color: var(--fg-dim); letter-spacing: 0; text-transform: none; }
+  .msg.user .tag { color: var(--user); }
+  .msg.user .body { border-left: 2px solid var(--user); padding-left: 10px; }
+  .msg.system .body { border-left: 2px solid var(--border-2); padding-left: 10px; color: var(--fg-dim); font-size: 12px; }
+  .msg.system .tag { color: var(--fg-dimmer); }
+  .body { white-space: pre-wrap; word-break: break-word; }
+  .toks { color: var(--fg-dimmer); }
+  .toolcall {
+    border: 1px solid var(--border-2); border-left: 2px solid var(--tool); border-radius: 6px;
+    background: var(--panel); padding: 6px 10px; margin: 7px 0 0;
+  }
+  .toolcall .tag { color: var(--tool); margin-bottom: 2px; }
+  .toolcall .args { color: var(--fg-dim); white-space: pre-wrap; word-break: break-word; }
+  .toolout {
+    border: 1px solid var(--border); border-left: 2px solid var(--border-2); border-radius: 6px;
+    background: var(--panel-2); padding: 6px 10px; color: var(--fg-dim);
+    white-space: pre-wrap; word-break: break-word; max-height: 250px; overflow: hidden; position: relative;
+  }
+  .toolout.elided::after {
+    content: ""; position: absolute; inset: auto 0 0 0; height: 56px;
+    background: linear-gradient(transparent, var(--panel-2));
+  }
+  .msg.tool .tag { color: var(--fg-dim); }
+  .cursor {
+    display: inline-block; width: 7px; height: 1.05em; vertical-align: -.15em;
+    background: var(--decode); margin-left: 1px; animation: blink 1s steps(1) infinite;
+  }
+  @keyframes blink { 50% { opacity: 0; } }
+  .msg.streaming .cursor { animation: none; opacity: 1; }
+
+  .card { border: 1px solid var(--border); border-radius: 8px; background: var(--panel); padding: 9px 10px; margin-bottom: 10px; }
+  .card > h2 { font-size: 10px; letter-spacing: 1.4px; text-transform: uppercase; color: var(--fg-dim); margin: 0 0 8px; font-weight: 600; }
+  .row { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+  .row label { flex: 1 1 auto; color: var(--fg-dim); }
+  .unit { color: var(--fg-dimmer); font-size: 11px; width: 46px; }
+  .hint { color: var(--fg-dimmer); font-size: 11px; }
+  table { width: 100%; border-collapse: collapse; font-size: 11px; font-variant-numeric: tabular-nums; }
+  th { text-align: left; color: var(--fg-dimmer); font-weight: 500; font-size: 10px; text-transform: uppercase; letter-spacing: .6px; padding: 2px 4px; }
+  td { padding: 2px 4px; border-top: 1px solid var(--border); color: var(--fg-dim); }
+  td.n { text-align: right; }
+  tr.live td { color: var(--fg); }
+  tr.pending td { opacity: .35; }
+  svg.chart { width: 100%; height: 132px; display: block; touch-action: none; }
+  svg.chart .grid { stroke: var(--border); stroke-width: 1; }
+  svg.chart .axis { fill: var(--fg-dimmer); font-size: 8px; font-family: var(--mono); }
+  svg.chart path.line { fill: none; stroke: var(--prefill); stroke-width: 1.75; }
+  svg.chart path.area { fill: var(--prefill); opacity: .1; stroke: none; }
+  svg.chart circle { fill: var(--bg); stroke: var(--prefill); stroke-width: 1.75; cursor: grab; }
+  svg.chart circle:hover { fill: var(--prefill); }
+  .btns { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
+  .btns button { flex: 1 1 auto; font-size: 11px; padding: 3px 6px; }
+  input.share { width: 100%; font-size: 10px; color: var(--fg-dim); background: var(--panel-2); border: 1px solid var(--border); border-radius: 5px; padding: 5px 6px; }
+  dl.summary { margin: 0; display: grid; grid-template-columns: 1fr auto; gap: 2px 8px; font-size: 11px; }
+  dl.summary dt { color: var(--fg-dimmer); }
+  dl.summary dd { margin: 0; text-align: right; color: var(--fg); font-variant-numeric: tabular-nums; }
+  .kbd { border: 1px solid var(--border-2); border-bottom-width: 2px; border-radius: 4px; padding: 0 4px; color: var(--fg-dim); font-size: 11px; }
+  @media (max-width: 900px) {
+    main { flex-direction: column; overflow-y: auto; }
+    .panel { width: 100%; flex: 0 0 auto; border-left: none; border-top: 1px solid var(--border); }
+    .transcript { padding-bottom: 24px; }
+  }
+</style>
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">agentic<em>·</em>sim</div>
+  <select id="session" title="Built-in session corpus"></select>
+  <button id="play" class="primary">▶ run</button>
+  <button id="restart" title="Restart (R)">↺</button>
+  <select id="speed" title="Playback speed"></select>
+  <div class="seek" id="seek"><div class="buf"></div><div class="head"></div></div>
+  <div class="clock"><b id="tcur">0.00s</b> / <span id="tdur">0.00s</span></div>
+  <div class="spacer"></div>
+  <button id="theme" title="Toggle theme">◐</button>
+  <button id="panelToggle" title="Toggle panel">panel</button>
+</header>
+
+<div class="phases" id="phases">
+  <div class="chip" data-phase="queue"><div class="k">queue</div><div class="v">—</div><div class="fill"></div></div>
+  <div class="chip" data-phase="prefill"><div class="k">prefill</div><div class="v">—</div><div class="fill"></div></div>
+  <div class="chip" data-phase="decode"><div class="k">decode</div><div class="v">—</div><div class="fill"></div></div>
+  <div class="chip" data-phase="tool"><div class="k">tool exec</div><div class="v">—</div><div class="fill"></div></div>
+</div>
+
+<main>
+  <section class="transcript" id="transcript"></section>
+  <aside class="panel" id="panel">
+    <div class="card">
+      <h2>Engine</h2>
+      <div class="row"><label for="prefill">prefill speed</label><input id="prefill" type="number" min="500" step="500"><span class="unit">tok/s</span></div>
+      <input id="prefillRange" type="range" min="0" max="100" step="0.5">
+      <div class="row"><label for="decode">decode speed</label><input id="decode" type="number" min="1" step="1"><span class="unit">tok/s</span></div>
+      <input id="decodeRange" type="range" min="0" max="100" step="0.5">
+      <div class="row"><label for="cache">prompt cache</label><input id="cache" type="checkbox"><span class="unit"></span></div>
+      <div class="hint" id="engineHint"></div>
+    </div>
+
+    <div class="card">
+      <h2>Contention</h2>
+      <div class="row"><label for="latency">per-request latency</label><input id="latency" type="number" min="0" step="50"><span class="unit">ms</span></div>
+      <div class="row"><label for="jitter">jitter (±)</label><input id="jitter" type="number" min="0" step="50"><span class="unit">ms</span></div>
+      <div class="hint">Paid once per request, before prefill. Jitter is deterministic — a link replays identically.</div>
+    </div>
+
+    <div class="card">
+      <h2>Context decay curve · <span id="curveN">N</span>-point</h2>
+      <svg class="chart" id="curveChart" viewBox="0 0 320 132" preserveAspectRatio="none"></svg>
+      <table id="curveTable"></table>
+      <div class="btns">
+        <button data-curve="flat">flat</button>
+        <button data-curve="gentle">gentle</button>
+        <button data-curve="steep">steep</button>
+        <button data-curve="cliff">cliff</button>
+        <button id="addPoint">+ point</button>
+      </div>
+      <div class="hint">Throughput multiplier vs. prompt size — prefill and decode both read it. Drag the points.</div>
+    </div>
+
+    <div class="card">
+      <h2>Request ledger</h2>
+      <table id="ledger"></table>
+    </div>
+
+    <div class="card">
+      <h2>Session summary</h2>
+      <dl class="summary" id="summary"></dl>
+    </div>
+
+    <div class="card">
+      <h2>Link</h2>
+      <input class="share" id="shareUrl" readonly>
+      <div class="btns"><button id="copy">copy link</button><button id="reset">defaults</button></div>
+      <div class="hint" style="margin-top:8px">
+        <span class="kbd">space</span> play · <span class="kbd">R</span> restart · <span class="kbd">←→</span> seek · <span class="kbd">1..7</span> speed · <span class="kbd">P</span> panel
+      </div>
+    </div>
+  </aside>
+</main>
+
+<script>
+'use strict';
+/* ============================================================================
+   Agentic Session Simulator
+   Models the two faces of LLM inference: a prefill burst over the whole prompt,
+   then a token-at-a-time decode that slows as session context grows, with an
+   optional per-request queue wait for a system under contention.
+   ========================================================================== */
+
+/* ------------------------------- corpus ---------------------------------
+   simTokens = prompt tokens a tool result drags into context without the
+   literal text being written out here (shown as an elided preview).        */
+const SESSIONS = [
+  {
+    id: 'greenfield',
+    name: 'greenfield · small context',
+    bootTokens: 6200,
+    steps: [
+      { role: 'user', text: 'Add a --json flag to tools/whoami.py that prints the resolved config as JSON. Keep the existing output paths untouched.' },
+      { role: 'assistant', text: 'Reading the CLI entry point before I touch anything, so I add the flag on the existing argparse object instead of inventing a second parser.',
+        tool: { name: 'Read', args: 'tools/whoami.py' } },
+      { role: 'tool', name: 'Read', execMs: 140, text:
+'1  import argparse\n2  import sys\n3\n4  from whoami.config import load\n5\n6  def main(argv=None):\n7      p = argparse.ArgumentParser(prog="whoami")\n8      p.add_argument("--plain", action="store_true")\n9      args = p.parse_args(argv)\n10     cfg = load()\n11     print(cfg.summary() if args.plain else cfg.pretty())\n12\n13 if __name__ == "__main__":\n14     sys.exit(main())' },
+      { role: 'assistant', text: 'Small file, one obvious seam. I will add --json beside --plain and put both in a mutually exclusive group, so nobody can ask for two different renderings of the same object at once and stdout stays machine parseable. The JSON comes from the same load() result the other paths use, rather than re-reading config off disk, which would let the two disagree if a config file changed mid run.',
+        tool: { name: 'Edit', args: 'tools/whoami.py · add --json, mutually exclusive with --plain' } },
+      { role: 'tool', name: 'Edit', execMs: 70, text:
+'--- a/tools/whoami.py\n+++ b/tools/whoami.py\n@@\n-p.add_argument("--plain", action="store_true")\n+group = p.add_mutually_exclusive_group()\n+group.add_argument("--plain", action="store_true")\n+group.add_argument("--json", action="store_true",\n+                   help="print resolved config as JSON")\n@@\n-    print(cfg.summary() if args.plain else cfg.pretty())\n+    if args.json:\n+        print(json.dumps(cfg.as_dict(), indent=2, sort_keys=True))\n+    elif args.plain:\n+        print(cfg.summary())\n+    else:\n+        print(cfg.pretty())' },
+      { role: 'assistant', text: 'That diff references json but never imports it, so the new flag would raise NameError on first use while the old paths still looked fine. Adding the import and a smoke test for it.',
+        tool: { name: 'Edit', args: 'tools/whoami.py · import json' } },
+      { role: 'tool', name: 'Edit', execMs: 60, text:
+'--- a/tools/whoami.py\n+++ b/tools/whoami.py\n@@\n import argparse\n+import json\n import sys' },
+      { role: 'assistant', text: 'Done. whoami --json prints the resolved config as JSON sorted by key, and --plain plus the default pretty output are byte for byte what they were before. Two tests added: one asserting the JSON round trips through json.loads with the expected keys, one asserting --json --plain exits with the argparse exclusivity error rather than picking a winner.' }
+    ]
+  },
+  {
+    id: 'bug-hunt',
+    name: 'bug hunt · medium context',
+    bootTokens: 9400,
+    steps: [
+      { role: 'user', text: 'tests/test_scheduler.py::test_drain_order fails about 1 run in 8 on CI but never locally. Find the real cause and fix it, not with a sleep.' },
+      { role: 'assistant', text: 'Flaky in CI and clean locally usually means one of three things: a real timing dependency, ordering that only holds when the machine is idle, or state leaking between tests. Checking the test body first, then whatever shared state it leans on.',
+        tool: { name: 'Grep', args: 'test_drain_order -n -A24 tests/test_scheduler.py' } },
+      { role: 'tool', name: 'Grep', execMs: 260, text:
+'58-def test_drain_order():\n59-    sched = Scheduler(threads=4)\n60-    for job in make_jobs(64):\n61-        sched.submit(job)\n62-    sched.drain(timeout=2.0)\n63-    assert [r.index for r in sched.results] == list(range(64))' },
+      { role: 'assistant', text: 'The assertion demands strict submission order out of a four thread pool. Nothing in the docstring says drain() is ordered, so either the contract is real and the implementation is wrong, or the contract does not exist and the test is asserting a coincidence. Reading drain to see which.',
+        tool: { name: 'Read', args: 'src/agentic/scheduler.py:118-164' } },
+      { role: 'tool', name: 'Read', execMs: 180, simTokens: 5200, text:
+'118\t    def drain(self, timeout):\n119\t        deadline = time.monotonic() + timeout\n120\t        while not self._queue.empty() or self._inflight:\n121\t            try:\n122\t                done = self._done.get(timeout=0.05)\n123\t            except Empty:\n124\t                if time.monotonic() > deadline:\n125\t                    raise TimeoutError("drain")\n126\t                continue\n127\t            self.results.append(done)\n128\t            self._inflight -= 1' },
+      { role: 'assistant', text: 'Found it. results is append order, and append happens on completion, so drain returns completion order. Locally the queue is empty before the workers can pile up, four threads pick jobs off in submission order, and completion order happens to match, so the test passes by luck. On a loaded CI box the first few jobs land in different workers at different times and the order breaks. The docstring for results claims ordered output, so the implementation is the buggy side, not the test.',
+        tool: { name: 'Edit', args: 'src/agentic/scheduler.py · buffer results by submission index, flush ordered' } },
+      { role: 'tool', name: 'Edit', execMs: 90, text:
+'--- a/src/agentic/scheduler.py\n+++ b/src/agentic/scheduler.py\n@@\n-            self.results.append(done)\n+            self._pending[done.index] = done\n+            while self._next in self._pending:\n+                self.results.append(self._pending.pop(self._next))\n+                self._next += 1\n             self._inflight -= 1' },
+      { role: 'assistant', text: 'Now ordering is enforced by the scheduler instead of by thread luck. Running the whole suite in a loop pinned to a single core to reproduce the starved CI condition.',
+        tool: { name: 'Bash', args: 'for i in $(seq 40); do taskset -c 0 pytest tests/test_scheduler.py -q || break; done' } },
+      { role: 'tool', name: 'Bash', execMs: 4200, simTokens: 3800, text:
+'40 runs, 0 failures\n112 passed in 38.42s\n(3x slower under taskset -c 0, as expected)' },
+      { role: 'assistant', text: '40 consecutive runs on one core, no failures; it failed roughly 5 of 40 before the change on the same box. I also tightened the test to submit jobs that finish out of order on purpose, so it now fails loudly if the ordering guarantee regresses instead of passing on a quiet machine.' }
+    ]
+  },
+  {
+    id: 'long-log',
+    name: 'long log · context blowout',
+    bootTokens: 11800,
+    steps: [
+      { role: 'user', text: 'The nightly asset sync worker gets OOM killed around 03:10 most nights. Logs are in /var/log/sync/nightly.log. Find the cause and propose a fix.' },
+      { role: 'assistant', text: 'Pulling the log shape first, then the tail around the kill window, so I know whether this is a slow leak or one oversized operation.',
+        tool: { name: 'Bash', args: 'wc -l /var/log/sync/nightly.log && tail -n 400 /var/log/sync/nightly.log' } },
+      { role: 'tool', name: 'Bash', execMs: 1400, simTokens: 31000, text:
+'284113 /var/log/sync/nightly.log\n03:04:12 INFO  sync.assets  bucket=media-raw listed 41,208 keys\n03:05:58 INFO  sync.assets  bucket=media-raw listed 96,733 keys\n03:07:40 WARN  sync.assets  heap 2.1GB rss 3.4GB inflight=128\n03:09:02 WARN  sync.assets  heap 3.8GB rss 5.9GB inflight=128\n03:10:11 ERROR kernel    Memory cgroup out of memory: Killed process 2291 (python)' },
+      { role: 'assistant', text: 'rss climbs monotonically while inflight stays pinned at 128, so the backlog is not sitting in the work queue, it is retained per item somewhere. The kill lands right as the media-raw listing finishes. Reading the listing path.',
+        tool: { name: 'Read', args: 'src/sync/assets.py:1-160' } },
+      { role: 'tool', name: 'Read', execMs: 220, simTokens: 12400, text:
+'61\tdef iter_keys(bucket):\n62\t    keys = []\n63\t    for page in client.list_objects(bucket):\n64\t        for obj in page:\n65\t            keys.append(Asset(bucket, obj))   # retains the whole listing\n66\t    return keys' },
+      { role: 'assistant', text: 'There it is. iter_keys materialises every Asset for the bucket before the consumer asks for a single one, then hands the list to a loop that processes one at a time. 96k objects is the OOM, and the timing lines up exactly with the media-raw listing completing at 03:10. Two changes: yield instead of accumulate, and hold at most one page so a slow consumer cannot pin the whole listing alive.',
+        tool: { name: 'Edit', args: 'src/sync/assets.py · iter_keys -> generator with bounded page retention' } },
+      { role: 'tool', name: 'Edit', execMs: 80, text:
+'--- a/src/sync/assets.py\n+++ b/src/sync/assets.py\n@@\n-def iter_keys(bucket):\n-    keys = []\n-    for page in client.list_objects(bucket):\n-        for obj in page:\n-            keys.append(Asset(bucket, obj))\n-    return keys\n+def iter_keys(bucket, prefetch=2):\n+    pages = client.list_objects(bucket)\n+    with bounded_prefetch(pages, prefetch) as page:\n+        for obj in page:\n+            yield Asset(bucket, obj)' },
+      { role: 'assistant', text: 'Running it against media-raw on staging with the memory profiler attached, since a generator is only a fix if nothing downstream forced it back into a list.',
+        tool: { name: 'Bash', args: 'python -m sync --bucket media-raw --dry-run --profile-mem | tail -n 40' } },
+      { role: 'tool', name: 'Bash', execMs: 9000, simTokens: 62000, text:
+'bucket=media-raw keys=96,733 elapsed=611s\npeak rss 410MB  (baseline 5.9GB)\ngc gen2 collections 118 -> 14\n2 assets raised ValueError during HEAD probe (pre-existing, unrelated)' },
+      { role: 'assistant', text: 'Peak rss is down by well over an order of magnitude, so the OOM cause is confirmed rather than merely plausible. The two ValueError probes show up on the baseline run too; checking whether they are counted as failures before I call this done.',
+        tool: { name: 'Bash', args: 'git stash && python -m sync --bucket media-raw --dry-run 2>&1 | grep -c ValueError' } },
+      { role: 'tool', name: 'Bash', execMs: 2100, simTokens: 8000, text: '2   (identical on baseline, pre-existing)' },
+      { role: 'assistant', text: 'Confirmed pre-existing and unrelated to this change. Summary: peak rss 5.9GB down to 410MB on the night that used to die, wall time within 3% because the bounded prefetch still hides page latency, gc gen2 pressure way down as a side effect of not holding a 96k element list. The 03:10 kill should be gone; the follow up worth opening is that the HEAD probe path swallows ValueError, which is a correctness bug, not a memory one.' }
+    ]
+  }
+];
+
+/* ------------------------------- helpers -------------------------------- */
+const $ = (s, r) => (r || document).querySelector(s);
+const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+const TOKEN_RE = /\S+\s*/g;
+const tokenize = (s) => s.match(TOKEN_RE) || [];
+
+function fmtTok(n) {
+  if (!Number.isFinite(n)) return '—';
+  if (n >= 1e6) return (n / 1e6).toFixed(2) + 'M';
+  if (n >= 1e4) return (n / 1e3).toFixed(0) + 'k';
+  if (n >= 1000) return (n / 1e3).toFixed(1) + 'k';
+  return String(Math.round(n));
+}
+function fmtDur(s) {
+  if (!Number.isFinite(s)) return '—';
+  if (s < 1) return Math.round(s * 1000) + ' ms';
+  if (s < 60) return s.toFixed(2) + ' s';
+  const m = Math.floor(s / 60);
+  return m + 'm ' + (s - m * 60).toFixed(0) + 's';
+}
+function mulberry32(a) {
+  return function () {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+/* piecewise-linear decode multiplier over prompt size */
+function curveAt(pts, x) {
+  if (!pts.length) return 100;
+  if (x <= pts[0].ctx) return pts[0].mult;
+  for (let i = 1; i < pts.length; i++) {
+    if (x <= pts[i].ctx) {
+      const a = pts[i - 1], b = pts[i];
+      const f = (x - a.ctx) / Math.max(1, b.ctx - a.ctx);
+      return a.mult + (b.mult - a.mult) * f;
+    }
+  }
+  return pts[pts.length - 1].mult;
+}
+
+/* ------------------------------- config --------------------------------- */
+const CURVES = {
+  flat:   [[0, 100]],
+  gentle: [[0, 100], [64000, 88], [200000, 72]],
+  steep:  [[0, 100], [16000, 82], [64000, 55], [160000, 30], [256000, 18]],
+  cliff:  [[0, 100], [96000, 96], [100000, 38], [256000, 22]]
+};
+const SPEEDS = [0.25, 0.5, 1, 2, 4, 8, 16];
+/* fixed so that a link replays identically, without an option for it */
+const JITTER_SEED = 1337;
+const DEFAULTS = {
+  session: 'long-log', prefill: 1500, decode: 50, latency: 300, jitter: 250,
+  cache: 1,
+  speed: 1, curve: 'steep', autoplay: 1, theme: 'dark'
+};
+
+const Q = new URLSearchParams(location.search);
+const qnum = (k, d) => { const v = parseFloat(Q.get(k)); return Number.isFinite(v) ? v : d; };
+const qstr = (k, d) => (Q.get(k) || d);
+const mkPts = (src) => src.map(([ctx, mult]) => ({ ctx, mult }));
+
+function parseCurve(raw, fallback) {
+  if (!raw) return mkPts(fallback);
+  const pts = String(raw).split(',').map((pair) => {
+    const kv = pair.split(':');
+    const ctx = parseFloat(kv[0]), mult = parseFloat(kv[1]);
+    return Number.isFinite(ctx) && Number.isFinite(mult) ? { ctx, mult } : null;
+  }).filter(Boolean).sort((a, b) => a.ctx - b.ctx);
+  return pts.length ? pts : mkPts(fallback);
+}
+
+const config = {
+  session:  SESSIONS.some(s => s.id === Q.get('session')) ? Q.get('session') : DEFAULTS.session,
+  prefill:  Math.max(500, qnum('prefill', qnum('p', DEFAULTS.prefill))),
+  decode:   Math.max(1, qnum('decode', qnum('d', DEFAULTS.decode))),
+  latency:  Math.max(0, qnum('latency', qnum('l', DEFAULTS.latency))),
+  jitter:   Math.max(0, qnum('jitter', DEFAULTS.jitter)),
+  cache:     qnum('cache', qnum('c', DEFAULTS.cache)) !== 0,
+  speed:    SPEEDS.includes(qnum('speed', qnum('s', DEFAULTS.speed))) ? qnum('speed', qnum('s', DEFAULTS.speed)) : 1,
+  autoplay: qnum('autoplay', DEFAULTS.autoplay) !== 0,
+  theme:    qstr('theme', DEFAULTS.theme),
+  curve:    parseCurve(Q.get('curve'), CURVES[qstr('curve', DEFAULTS.curve)] || CURVES[DEFAULTS.curve])
+};
+
+/* ---------------------------- timeline model ----------------------------
+   Per model turn (one request):
+     queue    scheduler / contention wait
+     prefill  uncached prompt tokens are ingested at prefill tok/s * curve, nothing
+              visible; the cached prefix is reused free
+     decode   tokens arrive at decode tok/s * curve(prompt size so far)
+     tool     the tool runs; its output joins context for the next prefill
+   Both phases read the same curve: a longer prompt costs more per token whether
+   the work is ingesting it or generating against it. */
+let TL = null;
+
+/* prefill is charged in blocks, both because engines chunk it and so the curve
+   can be integrated instead of sampled once at the end */
+const PREFILL_BLOCK = 512;
+
+/* seconds to ingest prompt tokens in [from, to) at the current curve */
+function prefillSeconds(from, to, pts) {
+  let secs = 0;
+  for (let n = from; n < to; ) {
+    const end = Math.min((Math.floor(n / PREFILL_BLOCK) + 1) * PREFILL_BLOCK, to);
+    const rate = Math.max(1, config.prefill * curveAt(pts, (n + end) / 2) / 100);
+    secs += (end - n) / rate;
+    n = end;
+  }
+  return secs;
+}
+
+function buildTimeline(flat) {
+  const session = SESSIONS.find(s => s.id === config.session) || SESSIONS[0];
+  const pts = flat ? [{ ctx: 0, mult: 100 }] : config.curve;
+  const rnd = mulberry32(JITTER_SEED);
+  const items = [], reqs = [];
+  let ctx = session.bootTokens || 0, t = 0, n = 0;
+  /* tokens added since the previous request: only these are prefillable, the
+     prefix before them is already in the KV cache and costs nothing to reuse,
+     which is the local-inference case where the cache is not shared */
+  let fresh = session.bootTokens || 0;
+  if (ctx) items.push({ kind: 'system', at: 0, tokens: ctx });
+
+  for (const step of session.steps) {
+    if (step.role === 'user') {
+      const tokens = tokenize(step.text);
+      items.push({ kind: 'user', text: step.text, at: t, tokens: tokens.length });
+      ctx += tokens.length;
+      fresh += tokens.length;
+      t += 0.15;
+
+    } else if (step.role === 'assistant') {
+      const latencyStart = t;
+      const wait = Math.max(0, (config.latency + (config.jitter ? (rnd() * 2 - 1) * config.jitter : 0)) / 1000);
+      const prefillStart = latencyStart + wait;
+      const cached = config.cache ? clamp(ctx - fresh, 0, ctx) : 0;
+      const cold = ctx - cached;
+      const prefillDur = prefillSeconds(cached, ctx, pts);
+      const decodeStart = prefillStart + prefillDur;
+
+      /* output = prose plus an optional streamed tool call, one token stream */
+      const segments = [{ kind: 'text', tokens: tokenize(step.text), from: 0 }];
+      if (step.tool) {
+        segments.push({ kind: 'tool', name: step.tool.name, args: step.tool.args,
+                        tokens: tokenize(step.tool.args), from: segments[0].tokens.length });
+      }
+      const all = [];
+      for (const s of segments) for (const tk of s.tokens) all.push(tk);
+
+      const times = [];
+      let acc = decodeStart, gen = 0, secs = 0;
+      for (let i = 0; i < all.length; i++) {
+        const rate = Math.max(1, config.decode * curveAt(pts, ctx + gen) / 100);
+        const dt = 1 / rate;
+        secs += dt; acc += dt; gen++;
+        times.push(acc);
+      }
+      const end = all.length ? acc : decodeStart;
+      const req = {
+        no: ++n, ctx, out: all.length, cached, cold,
+        queueMs: wait * 1000, prefillMs: prefillDur * 1000,
+        cacheSaveMs: prefillSeconds(0, cached, pts) * 1000,
+        avgDecode: secs > 0 ? all.length / secs : 0,
+        start: latencyStart, decodeStart, end
+      };
+      fresh = 0;
+      reqs.push(req);
+      items.push({ kind: 'assistant', req, segments, tokens: all, times,
+                   latencyStart, prefillStart, decodeStart, end, shown: -1 });
+      ctx += all.length;
+      t = end;
+
+    } else {
+      const tokens = tokenize(step.text).length + (step.simTokens || 0);
+      const from = t;
+      t += Math.max(0, (step.execMs || 100) / 1000);
+      items.push({ kind: 'tool', name: step.name, text: step.text, at: t, from,
+                   tokens, simTokens: step.simTokens || 0 });
+      ctx += tokens;
+      fresh += tokens;
+      t += 0.12;
+    }
+  }
+
+  const sum = (f) => reqs.reduce((a, r) => a + f(r), 0);
+  let toolMs = 0;
+  for (const i of items) if (i.kind === 'tool') toolMs += (i.at - i.from) * 1000;
+  return {
+    session, items, reqs, ctx, duration: Math.max(t, 0.001),
+    stats: {
+      requests: reqs.length, outTokens: sum(r => r.out),
+      queueMs: sum(r => r.queueMs), prefillMs: sum(r => r.prefillMs),
+      decodeMs: sum(r => r.end - r.decodeStart) * 1000, toolMs, peakCtx: ctx,
+      cachedTokens: sum(r => r.cached), coldTokens: sum(r => r.cold),
+      cacheSaveMs: sum(r => r.cacheSaveMs)
+    }
+  };
+}
+
+/* ------------------------------ DOM build ------------------------------- */
+const transcript = $('#transcript');
+const chips = {};
+document.querySelectorAll('.chip').forEach(c => { chips[c.dataset.phase] = c; });
+
+function el(tag, cls, txt) {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (txt != null) e.textContent = txt;
+  return e;
+}
+
+function renderDOM() {
+  transcript.textContent = '';
+  for (const item of TL.items) {
+    if (item.kind === 'user' || item.kind === 'system') {
+      const m = el('div', 'msg ' + item.kind);
+      const tag = el('div', 'tag');
+      tag.appendChild(el('span', null, item.kind === 'user' ? 'user' : 'session boot'));
+      if (item.kind === 'system') tag.appendChild(el('span', 'rt', fmtTok(item.tokens) + ' prompt tokens, re-sent on every request'));
+      m.appendChild(tag);
+      m.appendChild(el('div', 'body', item.kind === 'user'
+        ? item.text
+        : 'system prompt · tool schemas · repo map'));
+      item.el = m;
+
+    } else if (item.kind === 'assistant') {
+      const m = el('div', 'msg assistant');
+      const tag = el('div', 'tag');
+      tag.appendChild(el('span', null, 'assistant'));
+      item.rtEl = el('span', 'rt');
+      tag.appendChild(item.rtEl);
+      m.appendChild(tag);
+      item.segs = item.segments.map((s) => {
+        let box, tokHost;
+        if (s.kind === 'text') {
+          box = el('div', 'body');
+          tokHost = box;
+        } else {
+          box = el('div', 'toolcall');
+          const bt = el('div', 'tag');
+          bt.appendChild(el('span', null, 'tool call'));
+          bt.appendChild(el('span', 'rt', s.name));
+          box.appendChild(bt);
+          tokHost = el('div', 'args');
+          box.appendChild(tokHost);
+        }
+        const tokEl = el('span', 'tok');
+        const cursorEl = el('span', 'cursor');
+        cursorEl.style.display = 'none';
+        tokHost.appendChild(tokEl);
+        tokHost.appendChild(cursorEl);
+        m.appendChild(box);
+        return { seg: s, node: box, tokEl, cursorEl, last: -1 };
+      });
+      item.el = m;
+
+    } else {
+      const m = el('div', 'msg tool');
+      const tag = el('div', 'tag');
+      tag.appendChild(el('span', null, 'result'));
+      tag.appendChild(el('span', 'rt', item.name + ' · ' + fmtDur(item.at - item.from) +
+                                    ' · +' + fmtTok(item.tokens) + ' tok in'));
+      m.appendChild(tag);
+      const o = el('div', 'toolout' + (item.simTokens ? ' elided' : ''));
+      o.appendChild(el('span', null, item.text));
+      if (item.simTokens) {
+        o.appendChild(document.createElement('br'));
+        o.appendChild(el('span', 'toks', '… ' + fmtTok(item.simTokens) +
+          ' tokens elided from this preview, still counted in context'));
+      }
+      m.appendChild(o);
+      item.el = m;
+    }
+    transcript.appendChild(item.el);
+  }
+  buildLedger();
+}
+
+function buildLedger() {
+  const tbl = $('#ledger');
+  tbl.textContent = '';
+  const head = document.createElement('tr');
+  ['#', 'ctx in', 'prefilled', 'queue', 'prefill', 'decode', 'out'].forEach(h => head.appendChild(el('th', null, h)));
+  tbl.appendChild(head);
+  for (const r of TL.reqs) {
+    const tr = document.createElement('tr');
+    tr.className = 'pending';
+    [String(r.no), fmtTok(r.ctx), '', '', '', '', ''].forEach(v => tr.appendChild(el('td', 'n', v)));
+    tbl.appendChild(tr);
+    r.row = tr;
+  }
+}
+
+/* ------------------------------- rendering ------------------------------ */
+let vTime = 0, playing = false, anchorWall = 0, anchorV = 0, raf = 0, userScrolled = false;
+
+function setChip(phase, on, text, frac) {
+  const c = chips[phase];
+  if (!c) return;
+  c.classList.toggle('on', !!on);
+  c.querySelector('.v').textContent = text;
+  c.querySelector('.fill').style.width = (clamp(frac || 0, 0, 1) * 100).toFixed(1) + '%';
+}
+function resetChips() { for (const k in chips) setChip(k, false, '—', 0); }
+
+function phaseAt(t) {
+  for (const item of TL.items) {
+    if (item.kind === 'assistant') {
+      if (t < item.latencyStart) return null;
+      if (t < item.decodeStart) {
+        if (t < item.prefillStart) {
+          const d = item.prefillStart - item.latencyStart;
+          return { phase: 'queue', frac: d > 0 ? (t - item.latencyStart) / d : 1, item };
+        }
+        const d = item.decodeStart - item.prefillStart;
+        return { phase: 'prefill', frac: d > 0 ? (t - item.prefillStart) / d : 1, item };
+      }
+      if (t <= item.end) {
+        const d = item.end - item.decodeStart;
+        return { phase: 'decode', frac: d > 0 ? (t - item.decodeStart) / d : 1, item };
+      }
+    } else if (item.kind === 'tool') {
+      if (t < item.from) return null;
+      if (t < item.at) return { phase: 'tool', frac: (t - item.from) / Math.max(1e-9, item.at - item.from), item };
+    }
+  }
+  return null;
+}
+
+function countTokens(times, t) {
+  let lo = 0, hi = times.length;
+  while (lo < hi) { const mid = (lo + hi) >> 1; if (times[mid] <= t) lo = mid + 1; else hi = mid; }
+  return lo;
+}
+
+function render(t) {
+  const itemForReq = {};
+  for (const item of TL.items) {
+    if (item.kind === 'assistant') {
+      itemForReq[item.req.no] = item;
+      const queued = t >= item.latencyStart;
+      const prefilling = t >= item.prefillStart;
+      const done = t >= item.end;
+      item.el.classList.toggle('shown', queued);
+      if (prefilling) {
+        const n = countTokens(item.times, t);
+        if (item.shown !== n) {
+          item.shown = n;
+          for (const s of item.segs) {
+            const from = s.seg.from, len = s.seg.tokens.length;
+            const k = clamp(n - from, 0, len);
+            if (s.last !== k) { s.last = k; s.tokEl.textContent = s.seg.tokens.slice(0, k).join(''); }
+            const mine = n > from && n < from + len;
+            const lastSeg = s === item.segs[item.segs.length - 1];
+            s.cursorEl.style.display = (mine || (!done && n >= from + len && lastSeg)) ? '' : 'none';
+          }
+        }
+        const q = item.req;
+        item.rtEl.textContent = done
+          ? 'ctx ' + fmtTok(q.ctx) + ' → ' + q.out + ' tok out @ ' + q.avgDecode.toFixed(0) + ' tok/s'
+          : (t < item.decodeStart ? 'prefilling ' + fmtTok(q.cold) + ' new tokens' +
+              (q.cached ? ', ' + fmtTok(q.cached) + ' reused' : '') + '…'
+                                  : 'decoding ' + n + '/' + q.out);
+      } else if (queued) {
+        item.rtEl.textContent = 'queued · waiting for a slot on the engine';
+      }
+      item.el.classList.toggle('streaming', t >= item.decodeStart && !done);
+    } else {
+      item.el.classList.toggle('shown', t >= item.at - 1e-9);
+    }
+  }
+
+  const p = phaseAt(t);
+  if (!p) {
+    resetChips();
+  } else if (p.phase === 'queue') {
+    resetChips();
+    setChip('queue', true, fmtDur(p.item.req.queueMs / 1000) + ' wait · req #' + p.item.req.no, p.frac);
+    setChip('prefill', false, fmtDur(p.item.req.prefillMs / 1000) + ' queued', 0);
+  } else if (p.phase === 'prefill') {
+    resetChips();
+    const q = p.item.req;
+    const eff = Math.max(1, config.prefill * curveAt(config.curve, q.cached + q.cold * p.frac) / 100);
+    setChip('prefill', true, fmtTok(q.cold * p.frac) + ' / ' + fmtTok(q.cold) + ' tok ingested · ' +
+            (q.cached ? fmtTok(q.cached) + ' reused' : 'cold') + ' @ ' + fmtTok(eff) + ' tok/s', p.frac);
+  } else if (p.phase === 'decode') {
+    resetChips();
+    const q = p.item.req, n = countTokens(p.item.times, t);
+    const inst = n / Math.max(1e-9, t - p.item.decodeStart);
+    const cap = config.decode * curveAt(config.curve, q.ctx + n) / 100;
+    setChip('decode', true, n + '/' + q.out + ' tok · ' + inst.toFixed(0) + ' tok/s (cap ' + cap.toFixed(0) + ')', p.frac);
+  } else {
+    resetChips();
+    setChip('tool', true, p.item.name + ' · ' + fmtDur(p.item.at - p.item.from), p.frac);
+  }
+
+  for (const r of TL.reqs) {
+    const item = itemForReq[r.no];
+    const td = r.row.children;
+    r.row.className = t >= r.end ? '' : (t >= r.start ? 'live' : 'pending');
+    td[2].textContent = t >= r.start ? fmtTok(r.cold) + (r.cached ? ' of ' + fmtTok(r.ctx) : '') : '';
+    td[3].textContent = t >= r.start ? fmtDur(r.queueMs / 1000) : '';
+    td[4].textContent = t >= r.start + r.queueMs / 1000 ? fmtDur(r.prefillMs / 1000) : '';
+    if (t >= r.decodeStart) {
+      const n = Math.max(1, countTokens(item.times, t));
+      td[5].textContent = (n / Math.max(1e-9, t - r.decodeStart)).toFixed(0) + ' t/s';
+      td[6].textContent = n + '/' + r.out;
+    } else { td[5].textContent = ''; td[6].textContent = ''; }
+  }
+
+  const frac = clamp(t / TL.duration, 0, 1);
+  $('#tcur').textContent = fmtDur(t);
+  $('#seek .buf').style.width = (frac * 100) + '%';
+  $('#seek .head').style.left = 'calc(' + (frac * 100) + '% - 1px)';
+
+  if (!userScrolled) {
+    const far = transcript.scrollHeight - transcript.scrollTop - transcript.clientHeight;
+    if (far > 24) transcript.scrollTop = transcript.scrollHeight - transcript.clientHeight;
+  }
+}
+
+function loop() {
+  cancelAnimationFrame(raf);
+  if (playing) {
+    vTime = anchorV + ((performance.now() - anchorWall) / 1000) * config.speed;
+    if (vTime >= TL.duration) { vTime = TL.duration; playing = false; updatePlayBtn(); }
+  }
+  render(vTime);
+  if (playing) raf = requestAnimationFrame(loop);
+}
+
+/* ------------------------------ transport ------------------------------- */
+function updatePlayBtn() {
+  $('#play').textContent = playing ? '❚❚ pause'
+    : (vTime >= TL.duration - 1e-6 ? '↻ run' : (vTime > 0 ? '▶ resume' : '▶ run'));
+}
+function play() {
+  if (vTime >= TL.duration - 1e-6) { vTime = 0; userScrolled = false; }
+  playing = true; anchorWall = performance.now(); anchorV = vTime;
+  updatePlayBtn(); loop();
+}
+function pause() { playing = false; cancelAnimationFrame(raf); updatePlayBtn(); render(vTime); }
+function togglePlay() { if (playing) pause(); else play(); }
+function seek(t) {
+  vTime = clamp(t, 0, TL.duration);
+  if (playing) { anchorWall = performance.now(); anchorV = vTime; }
+  updatePlayBtn(); render(vTime);
+}
+
+let rebuildQueued = 0;
+function scheduleRebuild() {
+  if (rebuildQueued) return;
+  rebuildQueued = requestAnimationFrame(() => { rebuildQueued = 0; rebuild(); });
+}
+function rebuild() {
+  const keep = vTime;
+  cancelAnimationFrame(raf);
+  playing = false;
+  TL = buildTimeline(false);
+  TL.flatDuration = buildTimeline(true).duration;
+  renderDOM();
+  drawCurve();
+  vTime = clamp(keep, 0, TL.duration);
+  render(vTime);
+  updatePlayBtn();
+  updateSummary();
+  updateShare();
+}
+
+function updateSummary() {
+  const s = TL.stats;
+  const delta = ((TL.duration / TL.flatDuration) - 1) * 100;
+  const rows = [
+    ['requests', s.requests],
+    ['final context', fmtTok(s.peakCtx) + ' tok'],
+    ['output tokens', fmtTok(s.outTokens)],
+    ['prompt cache', config.cache ? 'on · instant reads' : 'off · full re-prefill'],
+    ['queue wait', fmtDur(s.queueMs / 1000)],
+    ['prefill', fmtDur(s.prefillMs / 1000)],
+    ['avg prefill', (s.coldTokens / Math.max(1e-9, s.prefillMs / 1000)).toFixed(0) + ' tok/s'],
+    ['prefill saved by cache', fmtDur(s.cacheSaveMs / 1000) + '  (' +
+      (s.prefillMs + s.cacheSaveMs > 0 ? (100 * s.cacheSaveMs / (s.prefillMs + s.cacheSaveMs)).toFixed(0) : '0') + '%)'],
+    ['decode', fmtDur(s.decodeMs / 1000)],
+    ['tool exec', fmtDur(s.toolMs / 1000)],
+    ['total', fmtDur(TL.duration)],
+    ['avg decode', (s.outTokens / Math.max(1e-9, s.decodeMs / 1000)).toFixed(0) + ' tok/s'],
+    ['same run, flat curve', fmtDur(TL.flatDuration) + '  (' + (delta >= 0 ? '+' : '') + delta.toFixed(0) + '%)']
+  ];
+  const dl = $('#summary');
+  dl.textContent = '';
+  for (const [k, v] of rows) { dl.appendChild(el('dt', null, k)); dl.appendChild(el('dd', null, String(v))); }
+  $('#tdur').textContent = fmtDur(TL.duration);
+}
+
+/* ------------------------------ curve chart ----------------------------- */
+const SVG_NS = 'http://www.w3.org/2000/svg';
+const CH = { w: 320, h: 132, l: 26, r: 8, t: 8, b: 16 };
+const cxOf = (ctx, xMax) => CH.l + (ctx / xMax) * (CH.w - CH.l - CH.r);
+const cyOf = (mult) => CH.t + (1 - clamp(mult, 0, 120) / 120) * (CH.h - CH.t - CH.b);
+const invX = (px, xMax) => ((px - CH.l) / (CH.w - CH.l - CH.r)) * xMax;
+const invY = (py) => (1 - (py - CH.t) / (CH.h - CH.t - CH.b)) * 120;
+const curveMax = () => Math.max(1000, config.curve[config.curve.length - 1].ctx * 1.12);
+const sortCurve = () => config.curve.sort((a, b) => a.ctx - b.ctx);
+
+function drawCurve() {
+  const svg = $('#curveChart');
+  svg.textContent = '';
+  CH.w = Math.max(200, svg.clientWidth || 320);
+  svg.setAttribute('viewBox', '0 0 ' + CH.w + ' ' + CH.h);
+  const xMax = curveMax();
+  const mk = (tag, attrs, txt) => {
+    const e = document.createElementNS(SVG_NS, tag);
+    for (const k in attrs) e.setAttribute(k, attrs[k]);
+    if (txt != null) e.textContent = txt;
+    svg.appendChild(e);
+    return e;
+  };
+  for (const m of [0, 25, 50, 75, 100]) {
+    mk('line', { class: 'grid', x1: CH.l, x2: CH.w - CH.r, y1: cyOf(m), y2: cyOf(m) });
+    mk('text', { class: 'axis', x: 1, y: cyOf(m) + 3 }, m + '%');
+  }
+  for (const f of [0, 0.5, 1]) {
+    mk('text', { class: 'axis', x: Math.max(1, cxOf(xMax * f, xMax) - 9), y: CH.h - 4 },
+       f === 0 ? '0' : fmtTok(xMax * f));
+  }
+  const pts = config.curve.map(p => [cxOf(p.ctx, xMax), cyOf(p.mult)]);
+  const d = pts.map((p, i) => (i ? 'L' : 'M') + p[0].toFixed(1) + ' ' + p[1].toFixed(1)).join(' ');
+  mk('path', { class: 'area', d: d + ' L' + pts[pts.length - 1][0].toFixed(1) + ' ' + cyOf(0) +
+                                ' L' + pts[0][0].toFixed(1) + ' ' + cyOf(0) + ' Z' });
+  mk('path', { class: 'line', d });
+  config.curve.forEach((p, i) => {
+    const c = mk('circle', { cx: pts[i][0], cy: pts[i][1], r: 4.5 });
+    c.dataset.i = String(i);
+    const tip = document.createElementNS(SVG_NS, 'title');
+    tip.textContent = fmtTok(p.ctx) + ' prompt → ' + p.mult + '% speed';
+    c.appendChild(tip);
+  });
+  $('#curveN').textContent = String(config.curve.length);
+  drawCurveTable();
+}
+
+/* Enter commits, Escape puts the stored value back; both leave the field */
+function commitOnEnter(node, point, key) {
+  node.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { node.blur(); }
+    else if (e.key === 'Escape') { node.value = String(point[key]); node.blur(); }
+  });
+}
+
+function drawCurveTable() {
+  const tbl = $('#curveTable');
+  tbl.textContent = '';
+  const head = document.createElement('tr');
+  ['prompt tok', 'speed %', ''].forEach(h => head.appendChild(el('th', null, h)));
+  tbl.appendChild(head);
+  config.curve.forEach((p, i) => {
+    const tr = document.createElement('tr');
+    const c1 = document.createElement('td');
+    const i1 = document.createElement('input');
+    i1.type = 'number'; i1.min = '0'; i1.step = '1000'; i1.value = String(p.ctx);
+    i1.style.width = '88px';
+    /* commit on blur: redrawing the table destroys these inputs, so updating on
+       every keystroke would steal the caret mid-number */
+    i1.addEventListener('change', () => {
+      p.ctx = Math.max(0, parseFloat(i1.value) || 0);
+      sortCurve(); drawCurve(); rebuild();
+    });
+    commitOnEnter(i1, p, 'ctx');
+    c1.appendChild(i1);
+    const c2 = document.createElement('td');
+    const i2 = document.createElement('input');
+    i2.type = 'number'; i2.min = '1'; i2.step = '5'; i2.value = String(p.mult);
+    i2.style.width = '62px';
+    i2.addEventListener('change', () => {
+      p.mult = clamp(parseFloat(i2.value) || 1, 1, 150);
+      drawCurve(); rebuild();
+    });
+    commitOnEnter(i2, p, 'mult');
+    c2.appendChild(i2);
+    const c3 = document.createElement('td');
+    if (config.curve.length > 1) {
+      const b = el('button', null, '×');
+      b.style.padding = '0 7px';
+      b.title = 'remove point';
+      b.addEventListener('click', () => { config.curve.splice(i, 1); sortCurve(); rebuild(); });
+      c3.appendChild(b);
+    }
+    tr.append(c1, c2, c3);
+    tbl.appendChild(tr);
+  });
+}
+
+(function curveDrag() {
+  const svg = $('#curveChart');
+  let idx = -1;
+  const local = (e) => {
+    const r = svg.getBoundingClientRect();
+    return { x: ((e.clientX - r.left) / r.width) * CH.w, y: ((e.clientY - r.top) / r.height) * CH.h };
+  };
+  svg.addEventListener('pointerdown', (e) => {
+    const c = e.target.closest ? e.target.closest('circle') : null;
+    if (!c) return;
+    idx = Number(c.dataset.i);
+    try { svg.setPointerCapture(e.pointerId); } catch (err) {}
+    e.preventDefault();
+  });
+  svg.addEventListener('pointermove', (e) => {
+    if (idx < 0 || !config.curve[idx]) return;
+    const p = local(e), xMax = curveMax(), pt = config.curve[idx];
+    const lo = idx > 0 ? config.curve[idx - 1].ctx + 500 : 0;
+    const hi = idx < config.curve.length - 1 ? config.curve[idx + 1].ctx - 500 : xMax;
+    pt.ctx = clamp(Math.round(invX(p.x, xMax) / 500) * 500, lo, Math.max(lo, hi));
+    pt.mult = clamp(Math.round(invY(p.y) / 5) * 5, 5, 150);
+    drawCurve(); scheduleRebuild();
+  });
+  const stop = () => { idx = -1; };
+  svg.addEventListener('pointerup', stop);
+  svg.addEventListener('pointercancel', stop);
+  svg.addEventListener('pointerleave', stop);
+})();
+
+$('#addPoint').addEventListener('click', () => {
+  const pts = config.curve;
+  let gap = -1, at = pts.length - 1;
+  for (let i = 1; i < pts.length; i++) {
+    const g = pts[i].ctx - pts[i - 1].ctx;
+    if (g > gap) { gap = g; at = i - 1; }
+  }
+  const a = pts[at], b = pts[at + 1];
+  if (b) pts.push({ ctx: Math.round((a.ctx + b.ctx) / 1000) * 1000, mult: Math.round((a.mult + b.mult) / 2) });
+  else pts.push({ ctx: a.ctx + 64000, mult: Math.max(5, a.mult - 20) });
+  sortCurve(); rebuild();
+});
+
+for (const b of document.querySelectorAll('[data-curve]')) {
+  b.addEventListener('click', () => { config.curve = mkPts(CURVES[b.dataset.curve]); rebuild(); });
+}
+
+/* ------------------------------ settings UI ----------------------------- */
+const RANGE = { prefill: [500, 200000], decode: [1, 600] };
+const toRange = (v, r) => clamp((Math.log(clamp(v, r[0], r[1]) / r[0]) / Math.log(r[1] / r[0])) * 100, 0, 100);
+const fromRange = (p, r) => {
+  const v = r[0] * Math.pow(r[1] / r[0], clamp(p, 0, 100) / 100);
+  return r === RANGE.prefill ? Math.round(v / 100) * 100 : Math.max(1, Math.round(v));
+};
+
+function syncEngine() {
+  $('#prefill').value = String(config.prefill);
+  $('#decode').value = String(config.decode);
+  $('#prefillRange').value = String(toRange(config.prefill, RANGE.prefill));
+  $('#decodeRange').value = String(toRange(config.decode, RANGE.decode));
+  $('#cache').checked = !!config.cache;
+  const first = config.curve.length ? config.curve[0].mult : 100;
+  $('#engineHint').textContent = 'TTFT ≈ queue + new tokens / prefill · first token at ' +
+    (config.decode * first / 100).toFixed(0) + ' tok/s · curve throttles both phases' +
+    (config.cache ? ' · prefix served free from cache' : ' · no cache, whole prompt each turn');
+}
+function syncContention() {
+  $('#latency').value = String(config.latency);
+  $('#jitter').value = String(config.jitter);
+}
+
+const num = (id, key, min, max, int) => {
+  const node = $('#' + id);
+  node.addEventListener('input', () => {
+    let v = parseFloat(node.value);
+    if (!Number.isFinite(v)) return;
+    v = clamp(v, min, max);
+    if (int) v = Math.round(v);
+    config[key] = v;
+    if (RANGE[key]) $('#' + key + 'Range').value = String(toRange(v, RANGE[key]));
+    rebuild();
+  });
+};
+num('prefill', 'prefill', 500, 4000000, true);
+num('decode', 'decode', 1, 5000, true);
+num('latency', 'latency', 0, 120000, true);
+num('jitter', 'jitter', 0, 60000, true);
+
+$('#cache').addEventListener('change', (e) => {
+  config.cache = !!e.target.checked;
+  syncEngine();
+  rebuild();
+});
+
+for (const key of ['prefill', 'decode']) {
+  $('#' + key + 'Range').addEventListener('input', (e) => {
+    config[key] = fromRange(parseFloat(e.target.value), RANGE[key]);
+    syncEngine();
+    scheduleRebuild();
+  });
+}
+
+const sessionSel = $('#session');
+for (const s of SESSIONS) {
+  const o = document.createElement('option');
+  o.value = s.id; o.textContent = s.name;
+  sessionSel.appendChild(o);
+}
+sessionSel.value = config.session;
+sessionSel.addEventListener('change', () => {
+  config.session = sessionSel.value;
+  userScrolled = false;
+  rebuild();
+  /* a new scenario starts parked at zero: switching corpus is a deliberate act,
+     so never resume on autoplay the way a page load does */
+  pause();
+  seek(0);
+});
+
+const speedSel = $('#speed');
+for (const s of SPEEDS) {
+  const o = document.createElement('option');
+  o.value = String(s); o.textContent = (s < 1 ? s : s + '') + '×';
+  speedSel.appendChild(o);
+}
+if (!SPEEDS.includes(config.speed)) config.speed = 1;
+speedSel.value = String(config.speed);
+speedSel.addEventListener('change', () => {
+  config.speed = parseFloat(speedSel.value) || 1;
+  if (playing) { anchorWall = performance.now(); anchorV = vTime; }
+  updateShare();
+});
+
+$('#play').addEventListener('click', togglePlay);
+$('#restart').addEventListener('click', () => { userScrolled = false; seek(0); play(); });
+$('#theme').addEventListener('click', () => {
+  config.theme = config.theme === 'light' ? 'dark' : 'light';
+  document.documentElement.dataset.theme = config.theme;
+  updateShare();
+});
+$('#panelToggle').addEventListener('click', () => document.body.classList.toggle('no-panel'));
+$('#reset').addEventListener('click', () => { location.href = location.pathname; });
+
+/* seek by click / drag */
+(function seekDrag() {
+  const bar = $('#seek');
+  let dragging = false;
+  const at = (e) => {
+    const r = bar.getBoundingClientRect();
+    seek(((e.clientX - r.left) / Math.max(1, r.width)) * TL.duration);
+  };
+  bar.addEventListener('pointerdown', (e) => { dragging = true; try { bar.setPointerCapture(e.pointerId); } catch (err) {} at(e); e.preventDefault(); });
+  bar.addEventListener('pointermove', (e) => { if (dragging) at(e); });
+  bar.addEventListener('pointerup', () => { dragging = false; });
+  bar.addEventListener('pointercancel', () => { dragging = false; });
+})();
+
+transcript.addEventListener('wheel', () => {
+  const far = transcript.scrollHeight - transcript.scrollTop - transcript.clientHeight;
+  userScrolled = far > 60;
+}, { passive: true });
+transcript.addEventListener('scroll', () => {
+  const far = transcript.scrollHeight - transcript.scrollTop - transcript.clientHeight;
+  if (far > 60) userScrolled = true;
+  else if (far < 8) userScrolled = false;
+}, { passive: true });
+
+document.addEventListener('keydown', (e) => {
+  const t = e.target;
+  if (t && /^(INPUT|SELECT|TEXTAREA|BUTTON)$/.test(t.tagName || '')) return;
+  if (e.code === 'Space') { e.preventDefault(); togglePlay(); }
+  else if (e.key === 'r' || e.key === 'R') { userScrolled = false; seek(0); play(); }
+  else if (e.key === 'ArrowRight') { e.preventDefault(); seek(vTime + (e.shiftKey ? 5 : 1)); }
+  else if (e.key === 'ArrowLeft') { e.preventDefault(); seek(vTime - (e.shiftKey ? 5 : 1)); }
+  else if (e.key === 'p' || e.key === 'P') document.body.classList.toggle('no-panel');
+  else if (e.key >= '1' && e.key <= String(SPEEDS.length)) {
+    config.speed = SPEEDS[Number(e.key) - 1];
+    speedSel.value = String(config.speed);
+    if (playing) { anchorWall = performance.now(); anchorV = vTime; }
+    updateShare();
+  }
+});
+
+/* ------------------------------- sharing -------------------------------- */
+function shareURL() {
+  const base = location.href.split('?')[0].split('#')[0];
+  const p = new URLSearchParams();
+  p.set('session', config.session);
+  p.set('prefill', String(config.prefill));
+  p.set('decode', String(config.decode));
+  p.set('latency', String(config.latency));
+  p.set('jitter', String(config.jitter));
+  p.set('cache', config.cache ? '1' : '0');
+  p.set('speed', String(config.speed));
+  p.set('curve', config.curve.map(c => Math.round(c.ctx) + ':' + Math.round(c.mult)).join(','));
+  p.set('autoplay', config.autoplay ? '1' : '0');
+  p.set('theme', config.theme);
+  return base + '?' + p.toString();
+}
+function updateShare() { $('#shareUrl').value = shareURL(); }
+
+$('#copy').addEventListener('click', async () => {
+  const url = shareURL();
+  const box = $('#copy');
+  const done = (txt) => { const old = box.textContent; box.textContent = txt; setTimeout(() => { box.textContent = old; }, 1200); };
+  try { await navigator.clipboard.writeText(url); done('copied ✓'); }
+  catch (err) { $('#shareUrl').select(); document.execCommand('copy'); done('copied ✓'); }
+});
+$('#shareUrl').addEventListener('focus', (e) => e.target.select());
+
+/* --------------------------------- boot --------------------------------- */
+document.documentElement.dataset.theme = config.theme === 'light' ? 'light' : 'dark';
+window.addEventListener('resize', () => drawCurve());
+syncEngine();
+syncContention();
+rebuild();
+if (config.autoplay) play(); else { updatePlayBtn(); render(vTime); }
+window.AS = { config, get tl() { return TL; }, buildTimeline, rebuild, seek, play, pause, phaseAt, render };
+</script>
+</body>
+</html>
