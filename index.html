@@ -133,6 +133,8 @@
   td.n { text-align: right; }
   tr.live td { color: var(--fg); }
   tr.pending td { opacity: .35; }
+  /* the first request after a harness compaction pays a re-prefill: flag the row */
+  tr.post-compact td:first-child { box-shadow: inset 4px 0 0 var(--warn); }
   svg.chart { width: 100%; height: 132px; display: block; touch-action: none; }
   svg.chart .grid { stroke: var(--border); stroke-width: 1; }
   svg.chart .axis { fill: var(--fg-dimmer); font-size: 8px; font-family: var(--mono); }
@@ -330,6 +332,33 @@ const SESSIONS = [
       { role: 'tool', name: 'Bash', execMs: 2100, simTokens: 8000, text: '2   (identical on baseline, pre-existing)' },
       { role: 'assistant', text: 'Confirmed pre-existing and unrelated to this change. Summary: peak rss 5.9GB down to 410MB on the night that used to die, wall time within 3% because the bounded prefetch still hides page latency, gc gen2 pressure way down as a side effect of not holding a 96k element list. The 03:10 kill should be gone; the follow up worth opening is that the HEAD probe path swallows ValueError, which is a correctness bug, not a memory one.' }
     ]
+  },
+  {
+    id: 'deep-fix',
+    name: 'deep fix · harness compaction',
+    bootTokens: 12000,
+    steps: [
+      { role: 'user', text: 'The render pipeline RSS grows about 40MB per frame-snapshot export batch on the viewer box. Logs are in /var/log/viewer/render.log from last night\'s run. Find the leak and fix it so a batch can finish without the box swapping.' },
+      { role: 'assistant', text: 'Same playbook as the sync worker: pull the log shape, then the window where RSS climbs, and find what holds decoded frames between batches. Checking the log around the export window first.',
+        tool: { name: 'Bash', args: 'wc -l /var/log/viewer/render.log && grep -n "export batch\\|heap" /var/log/viewer/render.log | tail -n 60' } },
+      { role: 'tool', name: 'Bash', execMs: 1600, simTokens: 26000, text:
+'03:12:01 export batch 1142 start rss 512MB frames=9600\n03:12:07 export batch 1142 frame 6004/9600 heap 1.8GB rss 2.4GB\n03:12:11 export batch 1142 frame 8060/9600 heap 2.9GB rss 3.6GB\n03:12:14 export batch 1142 done rss 3.9GB free 60MB\nassert EXPORT_OK after rss self-check' },
+      { role: 'assistant', text: 'rss climbs steadily across frames and never drops within the batch, so frames are being retained somewhere for the whole export rather than released per frame. heap between batches stays flat while the next batch starts from the elevated rss, which means the leak is not per-batch — it is per frame inside export. Reading the exporter to find the list holding them.',
+        tool: { name: 'Read', args: 'src/viewer/exporter.py:1-220' } },
+      { role: 'tool', name: 'Read', execMs: 240, simTokens: 31000, text:
+'114\tdef export_batch(self, frames):\n115\t    # frames arrive decoded; export keeps them until the flush\n116\t    self._pending = self._pending + list(frames)\n117\t    flush = len(self._pending) >= self.batch_size\n118\t    if flush:\n119\t        self._flush()\n120\t        self._pending = []' },
+      { role: 'compact', execMs: 3200, simTokens: 6200, text:
+'Session so far: viewer box, render pipeline RSS +40MB per export batch, last night run in /var/log/viewer/render.log. Log shows heap climbs per frame inside a batch and never drops across batches; exporter.py:114-120 accumulates self._pending across all incoming frames and only clears on flush, so decoded frames are retained for the whole batch — the suspected leak. Next step: replace the list accumulation with a streaming flush that writes frames as they decode.' },
+      { role: 'assistant', text: 'The accumulation is the leak — self._pending grows for the whole batch before a single flush. I will flush incrementally: fill a fixed window, flush it, and let the decoder stream into the next window so only one window of decoded frames is ever resident.',
+        tool: { name: 'Edit', args: 'src/viewer/exporter.py · stream frames, flush in fixed windows' } },
+      { role: 'tool', name: 'Edit', execMs: 110, text:
+'--- a/src/viewer/exporter.py\n+++ b/src/viewer/exporter.py\n@@\n-        self._pending = self._pending + list(frames)\n-        flush = len(self._pending) >= self.batch_size\n-        if flush:\n-            self._flush()\n-            self._pending = []\n+        for frame in frames:\n+            self._pending.append(frame)\n+            if len(self._pending) >= self.window:\n+                self._flush()' },
+      { role: 'assistant', text: 'Now the same batch replay with the profiler attached, so I am measuring the exporter and not the graph pipeline.',
+        tool: { name: 'Bash', args: 'python -m viewer exporter --replay /var/log/viewer/render.log --dry-run --profile' } },
+      { role: 'tool', name: 'Bash', execMs: 4200, simTokens: 12000, text:
+'batch 1142 replay: peak rss 640MB (was 3.9GB), frames 9600 processed\nexport completed, EXPORT_OK\nwall 94% of baseline, within noise' },
+      { role: 'assistant', text: 'Peak rss is down from 3.9GB to 640MB on the same replay log, EXPORT_OK still holds, and wall time is within 6% because the window flush overlaps decode with I/O. The leak is fixed at the source rather than masked with a larger batch. Ship it — the same accumulation pattern is worth a grep across the repo later, but the exporter is the only hot path for tonight.' }
+    ]
   }
 ];
 
@@ -494,8 +523,8 @@ function buildTimeline() {
   };
   const rnd = mulberry32(JITTER_SEED);
   const items = [], reqs = [];
-  let ctx = session.bootTokens || 0, t = 0, n = 0;
-  let userGapMs = 0, toolGapMs = 0;
+  let ctx = session.bootTokens || 0, t = 0, n = 0, peak = ctx;
+  let userGapMs = 0, toolGapMs = 0, lastCompact = null;
   /* tokens added since the previous request: only these are prefillable, the
      prefix before them is already in the KV cache and costs nothing to reuse,
      which is the local-inference case where the cache is not shared */
@@ -507,6 +536,7 @@ function buildTimeline() {
       const tokens = tokenize(step.text);
       items.push({ kind: 'user', text: step.text, at: t, tokens: tokens.length });
       ctx += tokens.length;
+      if (ctx > peak) peak = ctx;
       fresh += tokens.length;
       t += GAP_USER_MS / 1000; userGapMs += GAP_USER_MS;
 
@@ -542,14 +572,32 @@ function buildTimeline() {
         queueMs: wait * 1000, prefillMs: prefillDur * 1000,
         cacheSaveMs: prefillSeconds(0, cached, pts, config.prefill) * 1000,
         avgDecode: secs > 0 ? all.length / secs : 0,
-        start: latencyStart, decodeStart, end
+        start: latencyStart, decodeStart, end,
+        ...(lastCompact != null ? { afterCompact: lastCompact } : {})
       };
+      lastCompact = null;
       fresh = 0;
       reqs.push(req);
       items.push({ kind: 'assistant', req, segments, tokens: all, times,
                    latencyStart, prefillStart, decodeStart, end, shown: -1 });
       ctx += all.length;
+      if (ctx > peak) peak = ctx;
       t = end;
+
+    } else if (step.role === 'compact') {
+      /* a coding-harness history compaction: the detailed history is replaced by
+         a summary, so ctx shrinks and the prefix cache keeps only boot —
+         everything the engine had ingested past boot is new text again */
+      const tokens = tokenize(step.text).length + (step.simTokens || 0);
+      const from = t, before = ctx, boot = session.bootTokens || 0;
+      t += Math.max(0, (step.execMs ?? 3000) / 1000);
+      items.push({ kind: 'tool', compact: true, name: 'compaction', text: step.text,
+                   at: t, from, before, after: boot + tokens, boot, tokens,
+                   simTokens: step.simTokens || 0 });
+      ctx = boot + tokens;
+      fresh = tokens;
+      lastCompact = tokens;
+      t += GAP_TOOL_MS / 1000; toolGapMs += GAP_TOOL_MS;
 
     } else {
       const tokens = tokenize(step.text).length + (step.simTokens || 0);
@@ -558,6 +606,7 @@ function buildTimeline() {
       items.push({ kind: 'tool', name: step.name, text: step.text, at: t, from,
                    tokens, simTokens: step.simTokens || 0 });
       ctx += tokens;
+      if (ctx > peak) peak = ctx;
       fresh += tokens;
       t += GAP_TOOL_MS / 1000; toolGapMs += GAP_TOOL_MS;
     }
@@ -569,9 +618,10 @@ function buildTimeline() {
   const stats = {
     requests: reqs.length, outTokens: sum(r => r.out),
     queueMs: sum(r => r.queueMs), prefillMs: sum(r => r.prefillMs),
-    decodeMs: sum(r => r.end - r.decodeStart) * 1000, toolMs, peakCtx: ctx,
+    decodeMs: sum(r => r.end - r.decodeStart) * 1000, toolMs, peakCtx: peak,
     coldTokens: sum(r => r.cold),
-    cacheSaveMs: sum(r => r.cacheSaveMs), gapMs: userGapMs + toolGapMs
+    cacheSaveMs: sum(r => r.cacheSaveMs), gapMs: userGapMs + toolGapMs,
+    compactions: items.filter(i => i.compact).length
   };
   /* the same run on a flat (mult=100) curve: queue/tool/gaps are unchanged and
      the rate is constant, so prefill and decode collapse to plain divisions —
@@ -643,6 +693,26 @@ function renderDOM() {
       });
       item.el = m;
 
+    } else if (item.compact) {
+      const m = el('div', 'msg tool');
+      const tag = el('div', 'tag');
+      tag.appendChild(el('span', null, 'harness'));
+      tag.appendChild(el('span', 'rt', 'context compacted · ' + fmtTok(item.before) + ' → ' +
+        fmtTok(item.tokens) + ' tok summary · ' +
+        (TL.params.cache
+          ? 'only ' + fmtTok(item.boot) + ' boot cached · next request re-prefills ' + fmtTok(item.tokens) + ' cold'
+          : 'next request re-prefills ' + fmtTok(item.after) + ' cold')));
+      m.appendChild(tag);
+      const o = el('div', 'toolout' + (item.simTokens ? ' elided' : ''));
+      o.appendChild(el('span', null, item.text));
+      if (item.simTokens) {
+        o.appendChild(document.createElement('br'));
+        o.appendChild(el('span', 'toks', '… ' + fmtTok(item.simTokens) +
+          ' tokens elided from this preview, still counted in context'));
+      }
+      m.appendChild(o);
+      item.el = m;
+
     } else {
       const m = el('div', 'msg tool');
       const tag = el('div', 'tag');
@@ -673,8 +743,9 @@ function buildLedger() {
   tbl.appendChild(head);
   for (const r of TL.reqs) {
     const tr = document.createElement('tr');
-    tr.className = 'pending';
-    [String(r.no), fmtTok(r.ctx), '', '', '', '', ''].forEach(v => tr.appendChild(el('td', 'n', v)));
+    tr.className = 'pending' + (r.afterCompact ? ' post-compact' : '');
+    [(r.afterCompact ? '↻ ' : '') + String(r.no), fmtTok(r.ctx), '', '', '', '', '']
+      .forEach(v => tr.appendChild(el('td', 'n', v)));
     tbl.appendChild(tr);
     r.row = tr;
   }
@@ -803,8 +874,12 @@ function render(t) {
   for (const r of TL.reqs) {
     const item = itemForReq[r.no];
     const td = r.row.children;
-    r.row.className = t >= r.end ? '' : (t >= r.start ? 'live' : 'pending');
-    td[2].textContent = t >= r.start ? fmtTok(r.cold) + (r.cached ? ' of ' + fmtTok(r.ctx) : '') : '';
+    r.row.className = (r.afterCompact ? 'post-compact ' : '') + (t >= r.end ? '' : (t >= r.start ? 'live' : 'pending'));
+    td[2].textContent = t >= r.start
+      ? (r.afterCompact
+        ? 're-prefill · ' + fmtTok(r.cold) + (TL.params.cache ? ' (cache invalidated)' : '')
+        : fmtTok(r.cold) + (r.cached ? ' of ' + fmtTok(r.ctx) : ''))
+      : '';
     td[3].textContent = t >= r.start ? fmtDur(r.queueMs / 1000) : '';
     td[4].textContent = t >= r.start + r.queueMs / 1000 ? fmtDur(r.prefillMs / 1000) : '';
     if (t >= r.decodeStart) {
@@ -879,7 +954,7 @@ function updateSummary() {
   const delta = ((TL.duration / TL.flatDuration) - 1) * 100;
   const rows = [
     ['requests', s.requests],
-    ['final context', fmtTok(s.peakCtx) + ' tok'],
+    ['final context', fmtTok(TL.ctx) + ' tok'],
     ['output tokens', fmtTok(s.outTokens)],
     ['prompt cache', TL.params.cache ? 'on · instant reads' : 'off · full re-prefill'],
     ['queue wait', fmtDur(s.queueMs / 1000)],
@@ -894,6 +969,10 @@ function updateSummary() {
     ['avg decode', (s.outTokens / Math.max(1e-9, s.decodeMs / 1000)).toFixed(0) + ' tok/s'],
     ['same run, flat curve', fmtDur(TL.flatDuration) + '  (' + (delta >= 0 ? '+' : '') + delta.toFixed(0) + '%)']
   ];
+  if (s.compactions) {
+    if (TL.ctx < s.peakCtx) rows.splice(2, 0, ['peak context', fmtTok(s.peakCtx) + ' tok']);
+    rows.push(['harness compactions', s.compactions + '×']);
+  }
   const dl = $('#summary');
   dl.textContent = '';
   for (const [k, v] of rows) { dl.appendChild(el('dt', null, k)); dl.appendChild(el('dd', null, String(v))); }

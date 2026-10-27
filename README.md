@@ -8,8 +8,8 @@ per-request latency option to simulate a system under contention.
 Implemented as an all-in-one HTML file, with query parameters allowing a quick linking to
 a predefined configuration.
 
-Session export and replay is not implemented yet, so this pass ships three built-in session
-corpuses instead: `greenfield`, `bug-hunt`, and `long-log`.
+Session export and replay is not implemented yet, so this pass ships four built-in session
+corpuses instead: `greenfield`, `bug-hunt`, `long-log`, and `deep-fix`.
 
 ## Running
 
@@ -57,6 +57,15 @@ which is the local-inference case, where the KV cache stays resident and is not 
 other users. Nothing is charged for the prefix and nothing expires; unticking the cache is
 what a shared endpoint with no prefix reuse looks like.
 
+One thing *does* expire the prefix: context compaction. A coding harness that runs long
+collapses its history to a summary mid-session, and a summarised history is not in the KV
+cache. The corpus can model that with a `compact` step: the timeline drops context back to the
+boot prompt plus the summary and treats everything past boot as fresh, so the next request
+re-prefills it at full cost — the boots stay cached, the rest is paid for again. `deep-fix`
+runs one of these mid-way; the transcript shows the harness step (`context compacted · 69k →
+6.3k summary`), and the summary adds `peak context` and `harness compactions` rows so the
+drop — and the cache rebuild — is visible at a glance.
+
 The difference is most visible on the turns that follow something small. Request four of
 `long-log` arrives after a two line diff, so it prefills 50 tokens in 55 ms, where an
 uncached engine would still be re-reading 55k tokens for 49 seconds. Request six prefills 8k
@@ -83,7 +92,7 @@ scenario pauses and rewinds to zero rather than rolling straight into the new ru
 
 | parameter             | meaning                                             |
 |-----------------------|-----------------------------------------------------|
-| `session`             | `greenfield`, `bug-hunt`, `long-log`                 |
+| `session`             | `greenfield`, `bug-hunt`, `long-log`, `deep-fix`      |
 | `prefill`, `p`        | prefill speed in tok/s                               |
 | `decode`, `d`         | decode speed in tok/s, before the curve              |
 | `cache`, `c`          | prompt cache, `1` on (default) or `0` off            |

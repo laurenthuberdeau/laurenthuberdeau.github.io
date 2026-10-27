@@ -116,7 +116,10 @@ const decayExpected = S.peakCtx > 60000 && !isFlat() && AS.config.decode * Math.
 ok('boot produced timeline', TL.duration > 0.5, 'duration=' + TL.duration.toFixed(2) + 's');
 ok('requests modeled', S.requests >= 3, S.requests + ' requests');
 ok('ledger rows == requests', TL.reqs.every((r) => r.row));
-ok('context monotonic', TL.reqs.every((r, i) => i === 0 || r.ctx >= TL.reqs[i - 1].ctx));
+/* context only ever shrinks at harness compaction steps, never between them */
+const compacts = TL.items.filter((i) => i.compact);
+ok('context monotonic', TL.reqs.every((r, i) => i === 0 || r.ctx >= TL.reqs[i - 1].ctx
+  || compacts.some((c) => c.at >= TL.reqs[i - 1].end && c.at <= r.start)));
 ok('timeline monotonic', TL.reqs.every((r) => r.end >= r.decodeStart && r.decodeStart >= r.start));
 ok('items in time order', TL.items.every((it, i) => i === 0 || (it.at ?? it.latencyStart) >= (TL.items[i - 1].at ?? TL.items[i - 1].end) - 1e-9));
 ok('every request prefills real context', TL.reqs.every((r) => r.ctx > 0 && r.prefillMs > 0));
@@ -145,13 +148,13 @@ const fmt = (n) => (n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n));
    corpus, so demand a meaningful but not flat-preset-breaking decline: the last
    request must be at least 15% slower than the first, OR the curve must be so
    shallow that even the modeled end-of-session multiplier wouldn't guarantee it */
-ok('decode slows across session', !decayExpected || rates[rates.length - 1] < rates[0] * 0.85, rates.map((r) => r.toFixed(0)).join(' -> ') + ' tok/s');
-ok('prefill grows without cache', !decayExpected ||
+ok('decode slows across session', !decayExpected || compacts.length || rates[rates.length - 1] < rates[0] * 0.85, rates.map((r) => r.toFixed(0)).join(' -> ') + ' tok/s');
+ok('prefill grows without cache', !decayExpected || compacts.length ||
    (TL.reqs[TL.reqs.length - 1].prefillMs + TL.reqs[TL.reqs.length - 1].cacheSaveMs) > TL.reqs[0].prefillMs * 3,
    TL.reqs.map((r) => Math.round((r.prefillMs + r.cacheSaveMs) / 100) / 10 + 's').join(' -> ') + ' uncached');
 const effRate = (r) => r.cold / Math.max(1e-9, r.prefillMs / 1000);
 ok('prefill costs no less than a flat curve', TL.reqs.every((r) => r.prefillMs >= r.cold / AS.config.prefill * 1000 - 1e-6));
-ok('prefill throughput falls with prompt size', !decayExpected ||
+ok('prefill throughput falls with prompt size', !decayExpected || compacts.length ||
    effRate(TL.reqs[TL.reqs.length - 1]) < effRate(TL.reqs[0]) * 0.9,
    TL.reqs.map((r) => effRate(r).toFixed(0)).join(' -> ') + ' tok/s');
 ok('cache split covers the whole prompt', TL.reqs.every((r) => r.cached + r.cold === r.ctx));
@@ -177,6 +180,21 @@ ok('cache off saves nothing', off.stats.cacheSaveMs === 0);
 AS.config.cache = startCache; AS.rebuild(); pump();
 ok('cache state restored', Math.abs(AS.tl.duration - onDur) < 1e-6 && AS.tl.stats.cacheSaveMs === onSave,
    'saved ' + Math.round(onSave / 100) / 10 + 's');
+
+/* --- compaction semantics --- */
+if (compacts.length) {
+  ok('compactions counted', TL.stats.compactions === compacts.length);
+  const afterLast = TL.reqs.find((r) => r.start >= compacts[compacts.length - 1].at);
+  ok('compaction resets context', compacts.every((c) => {
+    const r = TL.reqs.find((x) => x.start >= c.at);
+    return r && r.ctx < c.before;
+  }), compacts.map((c) => fmt(c.before) + ' -> ' + fmt(c.tokens) + ' summary').join(' / '));
+  ok('compaction keeps only boot cached', !AS.config.cache || (afterLast && afterLast.cached === TL.session.bootTokens &&
+     afterLast.cold === afterLast.ctx - TL.session.bootTokens),
+     'cached ' + fmt(afterLast && afterLast.cached) + ' / cold ' + fmt(afterLast && afterLast.cold));
+} else {
+  ok('no compactions in a non-compacting session', TL.stats.compactions === 0);
+}
 
 /* --- handler battery --- */
 $('#play').dispatch('click'); pump();
