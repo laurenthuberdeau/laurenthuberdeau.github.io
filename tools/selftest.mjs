@@ -60,7 +60,7 @@ const document = {
   querySelector: (sel) => {
     if (cache.has(sel)) return cache.get(sel);
     /* class selectors and id-descendant selectors are internal sub-elements of
-       synthesized container nodes (e.g. .chip .v, #seek .buf); only lookups for
+       synthesized container nodes (e.g. .chip .v, #seek .played); only lookups for
        an unknown root id gate on the real markup and fail */
     const rootId = (sel.match(/^#[\w-]+/) || [sel, sel])[0];
     if (rootId[0] === '#') {
@@ -142,6 +142,47 @@ ok('phase: prefill', seen.has('prefill'));
 ok('phase: decode', seen.has('decode'));
 ok('phase: tool', seen.has('tool'));
 ok('phase: queue', AS.config.latency + AS.config.jitter > 0 ? seen.has('queue') : true);
+
+/* --- seek bar bands ---
+   the bar is drawn from TL.segments, so the tiling has to be exact and every band
+   has to sit where phaseAt agrees the phase is; otherwise the colour under the
+   playhead would disagree with the chips above it. */
+const SEG = TL.segments;
+ok('bands span the run', SEG.length > 0 && SEG[0].from === 0 &&
+   Math.abs(SEG[SEG.length - 1].to - TL.duration) < 1e-6,
+   SEG.length + ' bands over ' + TL.duration.toFixed(2) + 's');
+ok('bands are contiguous and ordered', SEG.every((s, i) =>
+   s.to > s.from && (i === 0 || Math.abs(s.from - SEG[i - 1].to) < 1e-9)));
+ok('bands cover each second once',
+   Math.abs(SEG.reduce((a, s) => a + s.to - s.from, 0) - TL.duration) <= 1e-6);
+ok('band colour matches the phase it covers', SEG.every((s) => {
+   const p = AS.phaseAt((s.from + s.to) / 2);
+   return p ? p.phase === s.phase : s.phase === 'gap';
+}), [...new Set(SEG.map((s) => s.phase))].join(' '));
+const gapSecs = SEG.filter((s) => s.phase === 'gap').reduce((a, s) => a + s.to - s.from, 0);
+ok('unlabelled bands are exactly the summary gaps', Math.abs(gapSecs * 1000 - S.gapMs) <= 1e-6,
+   gapSecs.toFixed(2) + 's of ' + SEG.length + ' bands');
+ok('every phase the run has gets a band', ['queue', 'prefill', 'decode', 'tool']
+   .every((ph) => !seen.has(ph) || SEG.some((s) => s.phase === ph)));
+/* band colour lives in CSS the shim cannot see, so read the stylesheet: a phase whose
+   rule or var goes missing renders an invisible band, which reads as a hole in the run,
+   and a palette the light theme forgot lands white-on-white. The four phase colours are
+   the encoding, so demand they stay distinct from each other in both themes. */
+const STYLE = (html.match(/<style>([\s\S]*?)<\/style>/) || [, ''])[1];
+const PHASE_VARS = ['--queue', '--prefill', '--decode', '--tool'];
+const palettes = [/:root \{([\s\S]*?)\n  \}/, /html\[data-theme="light"\] \{([\s\S]*?)\n  \}/]
+  .map((re) => (STYLE.match(re) || [, ''])[1]);
+const hexOf = (block, name) => (block.match(new RegExp(name + ':\\s*(#[0-9a-fA-F]+)')) || [, ''])[1].toLowerCase();
+const bandRule = (ph) => (STYLE.match(new RegExp('\\.seek \\.seg\\[data-phase="' + ph + '"\\][^{]*\\{([^}]*)\\}')) || [, ''])[1];
+const BANDS = [...new Set(SEG.map((s) => s.phase))];
+ok('every band phase has a colour', BANDS.every((ph) => /background:\s*var\(--[\w-]+\)/.test(bandRule(ph))),
+   BANDS.map((ph) => ph + '=' + (bandRule(ph).match(/var\((--[\w-]+)\)/) || [, '?'])[1]).join(' '));
+ok('both themes carry the whole phase palette', palettes.every((p) => [...PHASE_VARS, '--accent', '--border-2']
+   .every((v) => p.includes(v + ':'))), palettes.map((p) => PHASE_VARS.map((v) => hexOf(p, v) || 'missing').join(' ')).join('  |  '));
+ok('phase colours stay distinguishable', palettes.every((p) => {
+   const c = PHASE_VARS.map((v) => hexOf(p, v));
+   return c.every(Boolean) && new Set(c).size === c.length;
+}));
 const rates = TL.reqs.map((r) => r.avgDecode);
 const fmt = (n) => (n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n));
 /* the shallow 'gentle' preset slows decode by ~18% (49 -> 40 tok/s) on the long

@@ -88,6 +88,17 @@ when the field loses focus, or on `enter`; `escape` puts the old number back. Sw
 scenario pauses and rewinds to zero rather than rolling straight into the new run, so
 `autoplay` governs the page load only.
 
+The seek bar is the timeline drawn to scale rather than a progress fill: one band per phase
+run, in the colour of that phase's chip — queue white, prefill amber, decode green, tool
+exec purple, turn gaps neutral — dimmed ahead of the playhead and full strength behind it,
+the playhead itself taking the colour of the phase it sits in. Queue gets the absence of
+colour because nothing happens to your prompt while it waits for a slot, and prefill the
+amber because at bar height blue prefill sat too close to green decode to tell apart; the
+light theme inverts white queue to a dark neutral, white on white being no band at all.
+Bands are sized by duration, so an 85 s prefill on a 175 s run claims just under half the bar
+and the bar shows where a run actually goes; hover a band for its phase, request number, and
+own duration.
+
 ## Query parameters
 
 | parameter             | meaning                                             |
@@ -113,7 +124,10 @@ index.html?session=long-log&prefill=60000&decode=240&latency=2500&jitter=1500&ca
 ## Tests
 
 `tools/selftest.mjs` runs the page script in node against a small DOM shim, sweeping the
-timeline and firing the transport, keyboard, settings, curve editor, and seek handlers.
+timeline and firing the transport, keyboard, settings, curve editor, and seek handlers. It
+also checks the seek bar's bands: they tile the duration with nothing doubled or missed, each
+band's phase is the one `phaseAt` reports at its midpoint, and every band phase has a colour
+in both themes — so the bar cannot drift from the chips or go invisible on one palette.
 
 ```sh
 node tools/selftest.mjs index.html "?session=long-log&autoplay=0"
