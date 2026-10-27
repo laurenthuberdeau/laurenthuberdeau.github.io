@@ -92,7 +92,7 @@ scenario pauses and rewinds to zero rather than rolling straight into the new ru
 | `curve`               | `flat`, `gentle`, `steep`, `cliff`, or `ctx:mult` points such as `0:100,32000:60` |
 | `speed`, `s`          | playback speed `0.25`–`16`                           |
 | `autoplay`            | `0` to load paused — load only, switching scenario always pauses   |
-| `theme`               | `dark`, `light`                                      |
+| `theme`               | `dark`, `light` — defaults to your OS preference unless set      |
 
 The Link card in the panel mirrors the live configuration, and *copy link* writes the full
 self-describing URL to the clipboard.

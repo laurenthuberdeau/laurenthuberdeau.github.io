@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en" data-theme="dark">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -41,6 +41,7 @@
   button:hover { border-color: var(--prefill); color: var(--prefill); }
   button.primary { background: var(--prefill); border-color: var(--prefill); color: #06121a; font-weight: 700; min-width: 84px; }
   button.primary:hover { filter: brightness(1.12); color: #06121a; }
+  :focus-visible { outline: 2px solid var(--prefill); outline-offset: 1px; }
   input[type="number"] { width: 96px; }
   input[type="checkbox"] { width: 15px; height: 15px; accent-color: var(--prefill); }
   input[type="range"] { width: 100%; accent-color: var(--prefill); }
@@ -51,6 +52,7 @@
   .seek {
     position: relative; height: 7px; flex: 1 1 120px; min-width: 90px;
     background: var(--panel-2); border: 1px solid var(--border); border-radius: 4px; cursor: pointer;
+    touch-action: none;
   }
   .seek .buf { position: absolute; inset: 0 auto 0 0; border-radius: 4px; background: linear-gradient(90deg, var(--queue), var(--prefill) 35%, var(--decode)); width: 0; }
   .seek .head { position: absolute; top: -2px; width: 2px; height: 11px; background: var(--fg); left: 0; }
@@ -105,7 +107,7 @@
   .toolout {
     border: 1px solid var(--border); border-left: 2px solid var(--border-2); border-radius: 6px;
     background: var(--panel-2); padding: 6px 10px; color: var(--fg-dim);
-    white-space: pre-wrap; word-break: break-word; max-height: 250px; overflow: hidden; position: relative;
+    white-space: pre-wrap; word-break: break-word; max-height: 250px; overflow-y: auto; position: relative;
   }
   .toolout.elided::after {
     content: ""; position: absolute; inset: auto 0 0 0; height: 56px;
@@ -151,6 +153,19 @@
     .transcript { padding-bottom: 24px; }
   }
 </style>
+<script>
+/* Apply the theme before first paint: explicit ?theme= wins, otherwise follow
+   the OS. window.AS_THEME is the single source the boot config reads, so the
+   resolved theme can't disagree between head and script. */
+(function () {
+  var t = new URLSearchParams(location.search).get('theme');
+  t = (t === 'light' || t === 'dark')
+    ? t
+    : ((window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches) ? 'light' : 'dark');
+  window.AS_THEME = t;
+  document.documentElement.dataset.theme = t;
+})();
+</script>
 </head>
 <body>
 
@@ -359,6 +374,12 @@ function curveAt(pts, x) {
   }
   return pts[pts.length - 1].mult;
 }
+/* effective tok/s for a base speed under the curve at prompt size x. Both
+   phases and every display read this, so the floor and the % math can't
+   disagree between the model and the chips. */
+function effRate(base, pts, x) {
+  return Math.max(1, base * curveAt(pts, x) / 100);
+}
 
 /* ------------------------------- config --------------------------------- */
 const CURVES = {
@@ -381,6 +402,20 @@ const qnum = (k, d) => { const v = parseFloat(Q.get(k)); return Number.isFinite(
 const qstr = (k, d) => (Q.get(k) || d);
 const mkPts = (src) => src.map(([ctx, mult]) => ({ ctx, mult }));
 
+/* single source for the curve multiplier bounds — chart axis, drag, table editor
+   and parser all share it so drawn vs typed values cannot disagree */
+const MULT = { min: 1, max: 150, axis: 120 };
+/* ctx quantisation + minimum spacing shared by drag, table edit and addPoint */
+const CTX_STEP = 1000;
+const normMult = (v) => { const n = parseFloat(v); return clamp(Number.isFinite(n) ? n : MULT.min, MULT.min, MULT.max); };
+const normCtx = (v) => { const n = parseFloat(v); return Math.max(0, Math.round((Number.isFinite(n) ? n : 0) / CTX_STEP) * CTX_STEP); };
+/* quantise and clamp to a quantised [lo, hi], so the returned value is always a
+   clean multiple of CTX_STEP even when the bounds (like the axis edge) aren't */
+const qclampCtx = (raw, lo, hi) => {
+  lo = normCtx(lo); hi = Math.max(normCtx(hi), lo);
+  return clamp(Math.round(raw / CTX_STEP) * CTX_STEP, lo, hi);
+};
+
 function parseCurve(raw, fallback) {
   if (!raw) return mkPts(fallback);
   const pts = String(raw).split(',').map((pair) => {
@@ -388,7 +423,15 @@ function parseCurve(raw, fallback) {
     const ctx = parseFloat(kv[0]), mult = parseFloat(kv[1]);
     return Number.isFinite(ctx) && Number.isFinite(mult) ? { ctx, mult } : null;
   }).filter(Boolean).sort((a, b) => a.ctx - b.ctx);
-  return pts.length ? pts : mkPts(fallback);
+  /* clamp to the same domain the editor uses, drop coincident points */
+  const out = [];
+  for (const p of pts) {
+    p.ctx = normCtx(p.ctx);
+    p.mult = normMult(p.mult);
+    if (out.length && out[out.length - 1].ctx === p.ctx) continue;
+    out.push(p);
+  }
+  return out.length ? out : mkPts(fallback);
 }
 
 const config = {
@@ -400,7 +443,7 @@ const config = {
   cache:     qnum('cache', qnum('c', DEFAULTS.cache)) !== 0,
   speed:    SPEEDS.includes(qnum('speed', qnum('s', DEFAULTS.speed))) ? qnum('speed', qnum('s', DEFAULTS.speed)) : 1,
   autoplay: qnum('autoplay', DEFAULTS.autoplay) !== 0,
-  theme:    qstr('theme', DEFAULTS.theme),
+  theme:    window.AS_THEME || DEFAULTS.theme,
   curve:    parseCurve(Q.get('curve'), CURVES[qstr('curve', DEFAULTS.curve)] || CURVES[DEFAULTS.curve])
 };
 
@@ -419,24 +462,40 @@ let TL = null;
    can be integrated instead of sampled once at the end */
 const PREFILL_BLOCK = 512;
 
-/* seconds to ingest prompt tokens in [from, to) at the current curve */
-function prefillSeconds(from, to, pts) {
+/* seconds to ingest prompt tokens in [from, to) at the given base prefill speed */
+function prefillSeconds(from, to, pts, base) {
   let secs = 0;
   for (let n = from; n < to; ) {
     const end = Math.min((Math.floor(n / PREFILL_BLOCK) + 1) * PREFILL_BLOCK, to);
-    const rate = Math.max(1, config.prefill * curveAt(pts, (n + end) / 2) / 100);
+    const rate = effRate(base, pts, (n + end) / 2);
     secs += (end - n) / rate;
     n = end;
   }
   return secs;
 }
 
-function buildTimeline(flat) {
+/* small inter-turn gaps (message round-trip feel) that belong to no phase but
+   still elapse; surfaced in the summary so the accounting sums to duration */
+const GAP_USER_MS = 150, GAP_TOOL_MS = 120;
+
+function buildTimeline() {
   const session = SESSIONS.find(s => s.id === config.session) || SESSIONS[0];
-  const pts = flat ? [{ ctx: 0, mult: 100 }] : config.curve;
+  const pts = config.curve;
+  /* the parameter vector this timeline was built from. Every downstream read
+     (chips, ledger, summary, boot banner) goes through TL.params, so a deferred
+     rebuild (rAF-coalesced during drags/typing) can never render live settings
+     against an older timeline. The curve is copied: the editor mutates
+     config.curve in place. */
+  const params = {
+    session: session.id, bootTokens: session.bootTokens,
+    prefill: config.prefill, decode: config.decode,
+    latency: config.latency, jitter: config.jitter, cache: config.cache,
+    curve: pts.map(p => ({ ctx: p.ctx, mult: p.mult }))
+  };
   const rnd = mulberry32(JITTER_SEED);
   const items = [], reqs = [];
   let ctx = session.bootTokens || 0, t = 0, n = 0;
+  let userGapMs = 0, toolGapMs = 0;
   /* tokens added since the previous request: only these are prefillable, the
      prefix before them is already in the KV cache and costs nothing to reuse,
      which is the local-inference case where the cache is not shared */
@@ -449,7 +508,7 @@ function buildTimeline(flat) {
       items.push({ kind: 'user', text: step.text, at: t, tokens: tokens.length });
       ctx += tokens.length;
       fresh += tokens.length;
-      t += 0.15;
+      t += GAP_USER_MS / 1000; userGapMs += GAP_USER_MS;
 
     } else if (step.role === 'assistant') {
       const latencyStart = t;
@@ -457,7 +516,7 @@ function buildTimeline(flat) {
       const prefillStart = latencyStart + wait;
       const cached = config.cache ? clamp(ctx - fresh, 0, ctx) : 0;
       const cold = ctx - cached;
-      const prefillDur = prefillSeconds(cached, ctx, pts);
+      const prefillDur = prefillSeconds(cached, ctx, pts, config.prefill);
       const decodeStart = prefillStart + prefillDur;
 
       /* output = prose plus an optional streamed tool call, one token stream */
@@ -472,7 +531,7 @@ function buildTimeline(flat) {
       const times = [];
       let acc = decodeStart, gen = 0, secs = 0;
       for (let i = 0; i < all.length; i++) {
-        const rate = Math.max(1, config.decode * curveAt(pts, ctx + gen) / 100);
+        const rate = effRate(config.decode, pts, ctx + gen);
         const dt = 1 / rate;
         secs += dt; acc += dt; gen++;
         times.push(acc);
@@ -481,7 +540,7 @@ function buildTimeline(flat) {
       const req = {
         no: ++n, ctx, out: all.length, cached, cold,
         queueMs: wait * 1000, prefillMs: prefillDur * 1000,
-        cacheSaveMs: prefillSeconds(0, cached, pts) * 1000,
+        cacheSaveMs: prefillSeconds(0, cached, pts, config.prefill) * 1000,
         avgDecode: secs > 0 ? all.length / secs : 0,
         start: latencyStart, decodeStart, end
       };
@@ -500,22 +559,29 @@ function buildTimeline(flat) {
                    tokens, simTokens: step.simTokens || 0 });
       ctx += tokens;
       fresh += tokens;
-      t += 0.12;
+      t += GAP_TOOL_MS / 1000; toolGapMs += GAP_TOOL_MS;
     }
   }
 
   const sum = (f) => reqs.reduce((a, r) => a + f(r), 0);
   let toolMs = 0;
   for (const i of items) if (i.kind === 'tool') toolMs += (i.at - i.from) * 1000;
+  const stats = {
+    requests: reqs.length, outTokens: sum(r => r.out),
+    queueMs: sum(r => r.queueMs), prefillMs: sum(r => r.prefillMs),
+    decodeMs: sum(r => r.end - r.decodeStart) * 1000, toolMs, peakCtx: ctx,
+    coldTokens: sum(r => r.cold),
+    cacheSaveMs: sum(r => r.cacheSaveMs), gapMs: userGapMs + toolGapMs
+  };
+  /* the same run on a flat (mult=100) curve: queue/tool/gaps are unchanged and
+     the rate is constant, so prefill and decode collapse to plain divisions —
+     no need to build a second timeline */
+  const flatDuration = (stats.queueMs + stats.toolMs + stats.gapMs) / 1000
+                     + stats.coldTokens / config.prefill
+                     + stats.outTokens / config.decode;
   return {
-    session, items, reqs, ctx, duration: Math.max(t, 0.001),
-    stats: {
-      requests: reqs.length, outTokens: sum(r => r.out),
-      queueMs: sum(r => r.queueMs), prefillMs: sum(r => r.prefillMs),
-      decodeMs: sum(r => r.end - r.decodeStart) * 1000, toolMs, peakCtx: ctx,
-      cachedTokens: sum(r => r.cached), coldTokens: sum(r => r.cold),
-      cacheSaveMs: sum(r => r.cacheSaveMs)
-    }
+    session, items, reqs, ctx, duration: Math.max(t, 0.001), flatDuration, params,
+    stats
   };
 }
 
@@ -538,7 +604,8 @@ function renderDOM() {
       const m = el('div', 'msg ' + item.kind);
       const tag = el('div', 'tag');
       tag.appendChild(el('span', null, item.kind === 'user' ? 'user' : 'session boot'));
-      if (item.kind === 'system') tag.appendChild(el('span', 'rt', fmtTok(item.tokens) + ' prompt tokens, re-sent on every request'));
+      if (item.kind === 'system') tag.appendChild(el('span', 'rt', fmtTok(item.tokens) + ' prompt tokens' +
+        (TL.params.cache ? ', cached across turns' : ', re-sent on every request')));
       m.appendChild(tag);
       m.appendChild(el('div', 'body', item.kind === 'user'
         ? item.text
@@ -656,7 +723,18 @@ function countTokens(times, t) {
 }
 
 function render(t) {
+  const P = TL.params;
   const itemForReq = {};
+  /* clear a partially-streamed message when the playhead moves back before its
+     prefill started; otherwise seeking backward leaves already-emitted text in
+     the body next to a "queued" tag (the streaming branch never runs again) */
+  const resetStream = (item) => {
+    item.shown = -1;
+    for (const s of item.segs) {
+      if (s.last !== 0) { s.last = 0; s.tokEl.textContent = ''; }
+      s.cursorEl.style.display = 'none';
+    }
+  };
   for (const item of TL.items) {
     if (item.kind === 'assistant') {
       itemForReq[item.req.no] = item;
@@ -684,7 +762,13 @@ function render(t) {
               (q.cached ? ', ' + fmtTok(q.cached) + ' reused' : '') + '…'
                                   : 'decoding ' + n + '/' + q.out);
       } else if (queued) {
+        /* seeked back before this message's prefill: drop any previously
+           streamed tokens so the body matches the "queued" state */
+        if (item.shown >= 0) resetStream(item);
         item.rtEl.textContent = 'queued · waiting for a slot on the engine';
+      } else if (item.shown >= 0) {
+        /* before the request starts at all */
+        resetStream(item);
       }
       item.el.classList.toggle('streaming', t >= item.decodeStart && !done);
     } else {
@@ -702,14 +786,14 @@ function render(t) {
   } else if (p.phase === 'prefill') {
     resetChips();
     const q = p.item.req;
-    const eff = Math.max(1, config.prefill * curveAt(config.curve, q.cached + q.cold * p.frac) / 100);
+    const eff = effRate(P.prefill, P.curve, q.cached + q.cold * p.frac);
     setChip('prefill', true, fmtTok(q.cold * p.frac) + ' / ' + fmtTok(q.cold) + ' tok ingested · ' +
             (q.cached ? fmtTok(q.cached) + ' reused' : 'cold') + ' @ ' + fmtTok(eff) + ' tok/s', p.frac);
   } else if (p.phase === 'decode') {
     resetChips();
     const q = p.item.req, n = countTokens(p.item.times, t);
     const inst = n / Math.max(1e-9, t - p.item.decodeStart);
-    const cap = config.decode * curveAt(config.curve, q.ctx + n) / 100;
+    const cap = effRate(P.decode, P.curve, q.ctx + n);
     setChip('decode', true, n + '/' + q.out + ' tok · ' + inst.toFixed(0) + ' tok/s (cap ' + cap.toFixed(0) + ')', p.frac);
   } else {
     resetChips();
@@ -724,8 +808,10 @@ function render(t) {
     td[3].textContent = t >= r.start ? fmtDur(r.queueMs / 1000) : '';
     td[4].textContent = t >= r.start + r.queueMs / 1000 ? fmtDur(r.prefillMs / 1000) : '';
     if (t >= r.decodeStart) {
+      /* show the request's own measured decode rate; the elapsed-time division
+         would decay to 0 as later steps proceed and spike at decode start */
+      td[5].textContent = r.avgDecode.toFixed(0) + ' t/s';
       const n = Math.max(1, countTokens(item.times, t));
-      td[5].textContent = (n / Math.max(1e-9, t - r.decodeStart)).toFixed(0) + ' t/s';
       td[6].textContent = n + '/' + r.out;
     } else { td[5].textContent = ''; td[6].textContent = ''; }
   }
@@ -778,8 +864,7 @@ function rebuild() {
   const keep = vTime;
   cancelAnimationFrame(raf);
   playing = false;
-  TL = buildTimeline(false);
-  TL.flatDuration = buildTimeline(true).duration;
+  TL = buildTimeline();
   renderDOM();
   drawCurve();
   vTime = clamp(keep, 0, TL.duration);
@@ -796,7 +881,7 @@ function updateSummary() {
     ['requests', s.requests],
     ['final context', fmtTok(s.peakCtx) + ' tok'],
     ['output tokens', fmtTok(s.outTokens)],
-    ['prompt cache', config.cache ? 'on · instant reads' : 'off · full re-prefill'],
+    ['prompt cache', TL.params.cache ? 'on · instant reads' : 'off · full re-prefill'],
     ['queue wait', fmtDur(s.queueMs / 1000)],
     ['prefill', fmtDur(s.prefillMs / 1000)],
     ['avg prefill', (s.coldTokens / Math.max(1e-9, s.prefillMs / 1000)).toFixed(0) + ' tok/s'],
@@ -804,6 +889,7 @@ function updateSummary() {
       (s.prefillMs + s.cacheSaveMs > 0 ? (100 * s.cacheSaveMs / (s.prefillMs + s.cacheSaveMs)).toFixed(0) : '0') + '%)'],
     ['decode', fmtDur(s.decodeMs / 1000)],
     ['tool exec', fmtDur(s.toolMs / 1000)],
+    ['turn gaps', fmtDur(s.gapMs / 1000)],
     ['total', fmtDur(TL.duration)],
     ['avg decode', (s.outTokens / Math.max(1e-9, s.decodeMs / 1000)).toFixed(0) + ' tok/s'],
     ['same run, flat curve', fmtDur(TL.flatDuration) + '  (' + (delta >= 0 ? '+' : '') + delta.toFixed(0) + '%)']
@@ -818,9 +904,9 @@ function updateSummary() {
 const SVG_NS = 'http://www.w3.org/2000/svg';
 const CH = { w: 320, h: 132, l: 26, r: 8, t: 8, b: 16 };
 const cxOf = (ctx, xMax) => CH.l + (ctx / xMax) * (CH.w - CH.l - CH.r);
-const cyOf = (mult) => CH.t + (1 - clamp(mult, 0, 120) / 120) * (CH.h - CH.t - CH.b);
+const cyOf = (mult) => CH.t + (1 - clamp(mult, 0, MULT.axis) / MULT.axis) * (CH.h - CH.t - CH.b);
 const invX = (px, xMax) => ((px - CH.l) / (CH.w - CH.l - CH.r)) * xMax;
-const invY = (py) => (1 - (py - CH.t) / (CH.h - CH.t - CH.b)) * 120;
+const invY = (py) => (1 - (py - CH.t) / (CH.h - CH.t - CH.b)) * MULT.axis;
 const curveMax = () => Math.max(1000, config.curve[config.curve.length - 1].ctx * 1.12);
 const sortCurve = () => config.curve.sort((a, b) => a.ctx - b.ctx);
 
@@ -879,22 +965,26 @@ function drawCurveTable() {
     const tr = document.createElement('tr');
     const c1 = document.createElement('td');
     const i1 = document.createElement('input');
-    i1.type = 'number'; i1.min = '0'; i1.step = '1000'; i1.value = String(p.ctx);
+    i1.type = 'number'; i1.min = '0'; i1.step = String(CTX_STEP); i1.value = String(p.ctx);
     i1.style.width = '88px';
     /* commit on blur: redrawing the table destroys these inputs, so updating on
-       every keystroke would steal the caret mid-number */
+       every keystroke would steal the caret mid-number. Clamp to the same
+       neighbor bounds the drag uses so an edit can't cross/reorder points. */
     i1.addEventListener('change', () => {
-      p.ctx = Math.max(0, parseFloat(i1.value) || 0);
+      const raw = parseFloat(i1.value) || 0;
+      const lo = i > 0 ? config.curve[i - 1].ctx + CTX_STEP : 0;
+      const hi = i < config.curve.length - 1 ? config.curve[i + 1].ctx - CTX_STEP : Infinity;
+      p.ctx = normCtx(clamp(raw, lo, Math.max(lo, hi)));
       sortCurve(); drawCurve(); rebuild();
     });
     commitOnEnter(i1, p, 'ctx');
     c1.appendChild(i1);
     const c2 = document.createElement('td');
     const i2 = document.createElement('input');
-    i2.type = 'number'; i2.min = '1'; i2.step = '5'; i2.value = String(p.mult);
+    i2.type = 'number'; i2.min = String(MULT.min); i2.max = String(MULT.max); i2.step = '5'; i2.value = String(p.mult);
     i2.style.width = '62px';
     i2.addEventListener('change', () => {
-      p.mult = clamp(parseFloat(i2.value) || 1, 1, 150);
+      p.mult = normMult(i2.value);
       drawCurve(); rebuild();
     });
     commitOnEnter(i2, p, 'mult');
@@ -915,6 +1005,11 @@ function drawCurveTable() {
 (function curveDrag() {
   const svg = $('#curveChart');
   let idx = -1;
+  /* x-domain is snapshotted at pointerdown: curveMax() derives from the dragged
+     point, so reading it live each move would rescale the axis under the cursor
+     and make a stationary point drift (clamped to hi = xMax) */
+  let xMax = 1000;
+  let captured = false;
   const local = (e) => {
     const r = svg.getBoundingClientRect();
     return { x: ((e.clientX - r.left) / r.width) * CH.w, y: ((e.clientY - r.top) / r.height) * CH.h };
@@ -923,22 +1018,26 @@ function drawCurveTable() {
     const c = e.target.closest ? e.target.closest('circle') : null;
     if (!c) return;
     idx = Number(c.dataset.i);
-    try { svg.setPointerCapture(e.pointerId); } catch (err) {}
+    xMax = curveMax();
+    captured = false;
+    try { svg.setPointerCapture(e.pointerId); captured = true; } catch (err) {}
     e.preventDefault();
   });
   svg.addEventListener('pointermove', (e) => {
     if (idx < 0 || !config.curve[idx]) return;
-    const p = local(e), xMax = curveMax(), pt = config.curve[idx];
-    const lo = idx > 0 ? config.curve[idx - 1].ctx + 500 : 0;
-    const hi = idx < config.curve.length - 1 ? config.curve[idx + 1].ctx - 500 : xMax;
-    pt.ctx = clamp(Math.round(invX(p.x, xMax) / 500) * 500, lo, Math.max(lo, hi));
-    pt.mult = clamp(Math.round(invY(p.y) / 5) * 5, 5, 150);
+    const p = local(e), pt = config.curve[idx];
+    const lo = idx > 0 ? config.curve[idx - 1].ctx + CTX_STEP : 0;
+    const hi = idx < config.curve.length - 1 ? config.curve[idx + 1].ctx - CTX_STEP : xMax;
+    pt.ctx = qclampCtx(invX(p.x, xMax), lo, hi);
+    pt.mult = normMult(Math.round(invY(p.y) / 5) * 5);
     drawCurve(); scheduleRebuild();
   });
   const stop = () => { idx = -1; };
   svg.addEventListener('pointerup', stop);
   svg.addEventListener('pointercancel', stop);
-  svg.addEventListener('pointerleave', stop);
+  /* only treat a leave as the end of the gesture when we never held capture;
+     with capture the pointer stays logically inside regardless of the boundary */
+  svg.addEventListener('pointerleave', () => { if (!captured) stop(); });
 })();
 
 $('#addPoint').addEventListener('click', () => {
@@ -949,8 +1048,15 @@ $('#addPoint').addEventListener('click', () => {
     if (g > gap) { gap = g; at = i - 1; }
   }
   const a = pts[at], b = pts[at + 1];
-  if (b) pts.push({ ctx: Math.round((a.ctx + b.ctx) / 1000) * 1000, mult: Math.round((a.mult + b.mult) / 2) });
-  else pts.push({ ctx: a.ctx + 64000, mult: Math.max(5, a.mult - 20) });
+  if (b) {
+    /* only insert between two points when there is real room; a zero/duplicate
+       gap would add another coincident point and deadlock the editor */
+    const mid = Math.round((a.ctx + b.ctx) / 2 / CTX_STEP) * CTX_STEP;
+    if (mid <= a.ctx || mid >= b.ctx) return;
+    pts.push({ ctx: mid, mult: Math.round((a.mult + b.mult) / 2) });
+  } else {
+    pts.push({ ctx: normCtx(a.ctx) + CTX_STEP * 32, mult: Math.max(MULT.min, a.mult - 20) });
+  }
   sortCurve(); rebuild();
 });
 
@@ -959,11 +1065,17 @@ for (const b of document.querySelectorAll('[data-curve]')) {
 }
 
 /* ------------------------------ settings UI ----------------------------- */
-const RANGE = { prefill: [500, 200000], decode: [1, 600] };
+/* single source of per-parameter bounds shared by the slider ranges, the number
+   inputs, and their clamps so the field and the slider can never drift apart */
+const PARAMS = {
+  prefill: { min: 500, max: 200000, log: true },
+  decode:  { min: 1, max: 600, log: true }
+};
+const RANGE = { prefill: [PARAMS.prefill.min, PARAMS.prefill.max], decode: [PARAMS.decode.min, PARAMS.decode.max] };
 const toRange = (v, r) => clamp((Math.log(clamp(v, r[0], r[1]) / r[0]) / Math.log(r[1] / r[0])) * 100, 0, 100);
 const fromRange = (p, r) => {
   const v = r[0] * Math.pow(r[1] / r[0], clamp(p, 0, 100) / 100);
-  return r === RANGE.prefill ? Math.round(v / 100) * 100 : Math.max(1, Math.round(v));
+  return Math.max(r[0], Math.round(v));
 };
 
 function syncEngine() {
@@ -972,9 +1084,8 @@ function syncEngine() {
   $('#prefillRange').value = String(toRange(config.prefill, RANGE.prefill));
   $('#decodeRange').value = String(toRange(config.decode, RANGE.decode));
   $('#cache').checked = !!config.cache;
-  const first = config.curve.length ? config.curve[0].mult : 100;
   $('#engineHint').textContent = 'TTFT ≈ queue + new tokens / prefill · first token at ' +
-    (config.decode * first / 100).toFixed(0) + ' tok/s · curve throttles both phases' +
+    effRate(config.decode, config.curve, 0).toFixed(0) + ' tok/s · curve throttles both phases' +
     (config.cache ? ' · prefix served free from cache' : ' · no cache, whole prompt each turn');
 }
 function syncContention() {
@@ -990,12 +1101,17 @@ const num = (id, key, min, max, int) => {
     v = clamp(v, min, max);
     if (int) v = Math.round(v);
     config[key] = v;
+    /* reflect the clamped value back into the field so the panel and the model
+       (and the Link card) cannot disagree */
+    if (String(node.value) !== String(v)) node.value = String(v);
     if (RANGE[key]) $('#' + key + 'Range').value = String(toRange(v, RANGE[key]));
-    rebuild();
+    /* coalesce like the sliders: a typed multi-digit value rebuilds once, not
+       once per keystroke */
+    scheduleRebuild();
   });
 };
-num('prefill', 'prefill', 500, 4000000, true);
-num('decode', 'decode', 1, 5000, true);
+num('prefill', 'prefill', PARAMS.prefill.min, PARAMS.prefill.max, true);
+num('decode', 'decode', PARAMS.decode.min, PARAMS.decode.max, true);
 num('latency', 'latency', 0, 120000, true);
 num('jitter', 'jitter', 0, 60000, true);
 
@@ -1033,10 +1149,9 @@ sessionSel.addEventListener('change', () => {
 const speedSel = $('#speed');
 for (const s of SPEEDS) {
   const o = document.createElement('option');
-  o.value = String(s); o.textContent = (s < 1 ? s : s + '') + '×';
+  o.value = String(s); o.textContent = String(s) + '×';
   speedSel.appendChild(o);
 }
-if (!SPEEDS.includes(config.speed)) config.speed = 1;
 speedSel.value = String(config.speed);
 speedSel.addEventListener('change', () => {
   config.speed = parseFloat(speedSel.value) || 1;
@@ -1079,6 +1194,8 @@ transcript.addEventListener('scroll', () => {
 }, { passive: true });
 
 document.addEventListener('keydown', (e) => {
+  /* never hijack browser shortcuts (Cmd/Ctrl/Alt) or typing in fields */
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
   const t = e.target;
   if (t && /^(INPUT|SELECT|TEXTAREA|BUTTON)$/.test(t.tagName || '')) return;
   if (e.code === 'Space') { e.preventDefault(); togglePlay(); }
@@ -1128,7 +1245,7 @@ syncEngine();
 syncContention();
 rebuild();
 if (config.autoplay) play(); else { updatePlayBtn(); render(vTime); }
-window.AS = { config, get tl() { return TL; }, buildTimeline, rebuild, seek, play, pause, phaseAt, render };
+window.AS = { config, get tl() { return TL; }, rebuild, seek, play, pause, phaseAt, render };
 </script>
 </body>
 </html>

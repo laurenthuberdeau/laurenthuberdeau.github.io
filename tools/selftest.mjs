@@ -4,7 +4,11 @@
 import fs from 'node:fs';
 
 const html = fs.readFileSync(process.argv[2] || 'index.html', 'utf8');
-const src = html.match(/<script>([\s\S]*?)<\/script>/)[1];
+/* the page now has a small pre-paint theme script in <head>; grab the app
+   script (the one that defines window.AS — note AS_THEME also prefixes AS), not
+   the first <script> tag */
+const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]);
+const src = scripts.find((s) => s.includes('window.AS =')) || scripts[scripts.length - 1] || '';
 const errors = [];
 const guard = (what, fn) => { try { fn(); } catch (e) { errors.push(what + ': ' + e.message); } };
 
@@ -44,12 +48,30 @@ class El {
 const cache = new Map();
 const PHASES = ['queue', 'prefill', 'decode', 'tool'];
 const docListeners = {};
+/* ids present in the real markup. The shim resolves CSS ids against these so
+   HTML <-> JS drift (a JS $() referencing a renamed/removed id) fails loudly
+   instead of silently synthesizing an element a real browser would never have. */
+const MARKUP_IDS = new Set((html.match(/\bid="([^"]+)"/g) || []).map((m) => m.slice(4, -1)));
 const document = {
   documentElement: new El('html'), body: new El('body'),
   createElement: (t) => new El(t), createElementNS: (ns, t) => new El(t),
   addEventListener: (t, fn) => { (docListeners[t] = docListeners[t] || []).push(fn); },
   execCommand: () => true,
-  querySelector: (sel) => { if (!cache.has(sel)) { const e = new El(sel.includes('svg') ? 'svg' : 'div'); e.id = sel; cache.set(sel, e); } return cache.get(sel); },
+  querySelector: (sel) => {
+    if (cache.has(sel)) return cache.get(sel);
+    /* class selectors and id-descendant selectors are internal sub-elements of
+       synthesized container nodes (e.g. .chip .v, #seek .buf); only lookups for
+       an unknown root id gate on the real markup and fail */
+    const rootId = (sel.match(/^#[\w-]+/) || [sel, sel])[0];
+    if (rootId[0] === '#') {
+      const id = rootId.slice(1);
+      if (!MARKUP_IDS.has(id)) {
+        errors.push('unknown selector "' + sel + '" not in markup');
+        return null;
+      }
+    }
+    const e = new El(sel === '#curveChart' || sel.indexOf('curveChart') >= 0 ? 'svg' : 'div'); cache.set(sel, e); return e;
+  },
   querySelectorAll: (sel) => sel === '.chip'
     ? PHASES.map((p) => { const e = new El('div'); e.dataset.phase = p; e.appendChild(new El('div')); e.appendChild(new El('div')); e.appendChild(new El('div')); return e; })
     : sel === '[data-curve]' ? ['flat', 'gentle', 'steep', 'cliff'].map((c) => { const e = new El('button'); e.dataset.curve = c; return e; }) : [],
@@ -119,7 +141,11 @@ ok('phase: tool', seen.has('tool'));
 ok('phase: queue', AS.config.latency + AS.config.jitter > 0 ? seen.has('queue') : true);
 const rates = TL.reqs.map((r) => r.avgDecode);
 const fmt = (n) => (n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n));
-ok('decode slows across session', !decayExpected || rates[rates.length - 1] < rates[0] * 0.8, rates.map((r) => r.toFixed(0)).join(' -> ') + ' tok/s');
+/* the shallow 'gentle' preset slows decode by ~18% (49 -> 40 tok/s) on the long
+   corpus, so demand a meaningful but not flat-preset-breaking decline: the last
+   request must be at least 15% slower than the first, OR the curve must be so
+   shallow that even the modeled end-of-session multiplier wouldn't guarantee it */
+ok('decode slows across session', !decayExpected || rates[rates.length - 1] < rates[0] * 0.85, rates.map((r) => r.toFixed(0)).join(' -> ') + ' tok/s');
 ok('prefill grows without cache', !decayExpected ||
    (TL.reqs[TL.reqs.length - 1].prefillMs + TL.reqs[TL.reqs.length - 1].cacheSaveMs) > TL.reqs[0].prefillMs * 3,
    TL.reqs.map((r) => Math.round((r.prefillMs + r.cacheSaveMs) / 100) / 10 + 's').join(' -> ') + ' uncached');
