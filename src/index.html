@@ -73,11 +73,11 @@
            accessible name through aria-labelledby. What is given up is click-to-focus on the
            name; the field and slider are still clicked directly. -->
       <div class="ctl" title="Tokens per second while processing the prompt. A request re-reads only the part of the context that is not cached (if enabled), that is, the part that was added since the last request. Prefill speed decays as the context grows, following the decay curve.">
-        <div class="row"><span class="cap" id="prefillName">prefill speed</span><input id="prefill" type="number" min="500" max="200000" step="500" aria-labelledby="prefillName"><span class="unit">tok/s</span></div>
+        <div class="row"><span class="cap" id="prefillName">prefill speed</span><input id="prefill" type="number" min="500" max="100000" step="250" aria-labelledby="prefillName"><span class="unit">tok/s</span></div>
         <input id="prefillRange" aria-label="prefill speed, as a slider" type="range" min="0" max="100" step="0.5">
       </div>
       <div class="ctl" title="Tokens per second while generating output: prose, chain of thought and tool-calls. Decode speed decays as the context grows, following the decay curve.">
-        <div class="row"><span class="cap" id="decodeName">decode speed</span><input id="decode" type="number" min="1" max="600" step="1" aria-labelledby="decodeName"><span class="unit">tok/s</span></div>
+        <div class="row"><span class="cap" id="decodeName">decode speed</span><input id="decode" type="number" min="0" max="1000" step="5" aria-labelledby="decodeName"><span class="unit">tok/s</span></div>
         <input id="decodeRange" aria-label="decode speed, as a slider" type="range" min="0" max="100" step="0.5">
       </div>
       <div class="row" title="Cache prompt tokens between requests, so the engine does not have to re-process them on every turn. The cache is invalidated by a context compaction."><span class="cap" id="cacheName">prompt cache</span><input id="cache" type="checkbox" aria-labelledby="cacheName"><span class="unit"></span></div>

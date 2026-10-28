@@ -108,8 +108,8 @@ const mkPts = (src) => src.map(([ctx, mult]) => ({ ctx, mult }));
    fields, the sliders and their clamps, so a link cannot carry a value the panel
    would refuse to show */
 const LIMITS = {
-  prefill: { min: 500, max: 200000 },
-  decode:  { min: 1, max: 600 },
+  prefill: { min: 500, max: 100000 },
+  decode:  { min: 1, max: 1000 },
   latency: { min: 0, max: 120000 },
   jitter:  { min: 0, max: 60000 }
 };
