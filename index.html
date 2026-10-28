@@ -11,12 +11,12 @@
     --fg: #d6deeb; --fg-dim: #8d9bb0; --fg-dimmer: #5d6b80;
     --accent: #4ec9ff;   /* chrome only: buttons, focus, sliders, the decay curve */
     --user: #7fb2ff; --warn: #ff7b7b;
-    /* The phase encoding, one colour per phase, shared by the chips and the bands on
-       the seek bar. Queue is white — nothing has started for you yet, so it gets the
+    /* The phase encoding, one colour per phase, shared by the phase bar and the bands
+       on the seek bar. Queue is white — nothing has started for you yet, so it gets the
        absence of colour — and prefill holds the amber: at bar height prefill blue sat
        too close to decode green to tell apart. The light theme can't put a white band
        on a white panel, so there queue inverts to a dark neutral instead, and amber
-       darkens to stay readable as chip text. */
+       darkens to stay readable as phase text. */
     --queue: #f2f6fc; --prefill: #f0a35e; --decode: #6ee7a8; --tool: #cf8bff;
     --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
   }
@@ -71,7 +71,7 @@
     touch-action: none;
   }
   /* the bar is the timeline drawn to scale, not a progress gradient: one band per
-     phase run in that phase's chip colour, dimmed ahead of the playhead and full
+     phase run in that phase's colour, dimmed ahead of the playhead and full
      strength behind it. TL.segments lays out both strips, so the bands land where
      the phases actually happened rather than where an even blend would put them. */
   .seek .track, .seek .played {
@@ -85,7 +85,7 @@
   .seek .seg[data-phase="decode"]  { background: var(--decode); }
   .seek .seg[data-phase="tool"]    { background: var(--tool); }
   .seek .seg[data-phase="gap"]     { background: var(--border-2); }
-  /* the playhead takes the colour of the phase it sits in, like the chips above, and
+  /* the playhead takes the colour of the phase it sits in, like the phase bar above, and
      a var(--bg) ring so it still reads against a played band of its own colour */
   .seek .head { position: absolute; top: -2px; width: 2px; height: 11px; background: var(--fg); left: 0; box-shadow: 0 0 0 1px var(--bg); }
   .seek[data-phase="queue"]   .head { background: var(--queue); }
@@ -93,28 +93,48 @@
   .seek[data-phase="decode"]  .head { background: var(--decode); }
   .seek[data-phase="tool"]    .head { background: var(--tool); }
 
-  .phases {
-    display: flex; gap: 8px; padding: 8px 12px; background: var(--bg-2);
-    border-bottom: 1px solid var(--border); flex: 0 0 auto; overflow-x: auto;
+  /* One rectangle instead of a row of four chips: it names the phase it is in, takes
+     that phase's colour (heading, stripe and wash all read from --c) and fills as the
+     phase runs. Same encoding as the bands and the playhead, a third of the height,
+     and unlike four fixed-minimum boxes it survives a narrow window. */
+  .phasebar {
+    --c: var(--fg-dimmer); --frac: 0;
+    position: relative; flex: 0 0 auto; overflow: hidden; user-select: none;
+    display: flex; align-items: baseline; gap: 10px;
+    padding: 7px 12px; background: var(--bg-2); border-bottom: 1px solid var(--border);
+    box-shadow: inset 3px 0 0 var(--c);
+    font-family: var(--mono); font-size: 11px; line-height: 1.3;
+    cursor: pointer;   /* it steps to the next phase; see stepPhase */
   }
-  .chip {
-    flex: 1 1 0; min-width: 172px; border: 1px solid var(--border); border-radius: 6px;
-    background: var(--panel); padding: 5px 9px 8px; position: relative; overflow: hidden;
-    opacity: .42; transition: opacity .12s ease, border-color .12s ease;
-  }
-  .chip.on { opacity: 1; border-color: var(--c); }
-  .chip .k { font-size: 10px; letter-spacing: 1.4px; color: var(--c); text-transform: uppercase; }
-  .chip .v { font-size: 11px; color: var(--fg-dim); font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .chip .fill { position: absolute; left: 0; bottom: 0; height: 2px; width: 0; background: var(--c); }
-  .chip[data-phase="queue"]   { --c: var(--queue); }
-  .chip[data-phase="prefill"] { --c: var(--prefill); }
-  .chip[data-phase="decode"]  { --c: var(--decode); }
-  .chip[data-phase="tool"]    { --c: var(--tool); }
-  .chip.on .fill { box-shadow: 0 0 8px var(--c); }
-  .chip.on .k::after { content: " ●"; }
+  .phasebar:hover { background: var(--panel); }
+  .phasebar .k { position: relative; flex: 0 0 auto; font-size: 10px; font-weight: 600; letter-spacing: 1.5px; text-transform: uppercase; color: var(--c); white-space: nowrap; }
+  /* min-width: 0 so the detail can actually shrink and ellipsize instead of pushing
+     the bar wider than the window */
+  .phasebar .v { position: relative; min-width: 0; flex: 1 1 auto; color: var(--fg-dim); font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  /* the hint names where a click would land, so the control is discoverable without
+     having to click it to find out */
+  .phasebar .next { position: relative; flex: 0 0 auto; margin-left: auto; padding-left: 12px; color: var(--fg-dimmer); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .phasebar:hover .next { color: var(--c); }
+  /* the wash carries the progress as a tint, so it takes the phase colour at low alpha;
+     the heading and stripe above stay full strength because opacity is per element */
+  .phasebar .fill { position: absolute; left: 0; top: 0; bottom: 0; width: 0; background: var(--c); opacity: .13; }
+  .phasebar[data-phase="queue"]   { --c: var(--queue); }
+  .phasebar[data-phase="prefill"] { --c: var(--prefill); }
+  .phasebar[data-phase="decode"]  { --c: var(--decode); }
+  .phasebar[data-phase="tool"]    { --c: var(--tool); }
+  /* the non-phases: a turn gap belongs to the harness rather than the engine, and
+     idle/done have nothing running — neither gets to borrow a phase's colour */
+  .phasebar[data-phase="gap"], .phasebar[data-phase="idle"], .phasebar[data-phase="done"] { --c: var(--fg-dimmer); }
 
   main { flex: 1 1 auto; display: flex; min-height: 0; }
-  .transcript { flex: 1 1 auto; overflow-y: auto; padding: 18px 22px 26vh; }
+  /* Blocks are revealed by opacity, so every message in the session is laid out from the
+     first frame and the pane's scroll height is the whole run. Bottom padding used to be
+     26vh, which made the pane overflow its own content by a quarter of the viewport: it wore
+     a scrollbar with three short messages in it, when the bar is supposed to mean "there is
+     more to read" rather than "there is blank space below". What is left is exactly the gap
+     follow() asks for under a streaming line — keep the two in step, or the live line lands
+     either flush against the pane edge or with a scrollbar to spare. */
+  .transcript { flex: 1 1 auto; overflow-y: auto; padding: 18px 22px 12px; }
   .panel {
     width: 372px; flex: 0 0 372px; border-left: 1px solid var(--border);
     background: var(--bg-2); overflow-y: auto; padding: 10px;
@@ -196,7 +216,6 @@
   @media (max-width: 900px) {
     main { flex-direction: column; overflow-y: auto; }
     .panel { width: 100%; flex: 0 0 auto; border-left: none; border-top: 1px solid var(--border); }
-    .transcript { padding-bottom: 24px; }
   }
 </style>
 <script>
@@ -228,11 +247,9 @@
   <button id="panelToggle" title="Toggle panel">panel</button>
 </header>
 
-<div class="phases" id="phases">
-  <div class="chip" data-phase="queue"><div class="k">queue</div><div class="v">—</div><div class="fill"></div></div>
-  <div class="chip" data-phase="prefill"><div class="k">prefill</div><div class="v">—</div><div class="fill"></div></div>
-  <div class="chip" data-phase="decode"><div class="k">decode</div><div class="v">—</div><div class="fill"></div></div>
-  <div class="chip" data-phase="tool"><div class="k">tool exec</div><div class="v">—</div><div class="fill"></div></div>
+<div class="phasebar" id="phase" data-phase="idle"
+     title="The phase the engine is in right now — queue, prefill, decode, and the harness's tool exec and turn gaps. The wash fills as that phase itself progresses. Click to step to the next phase, shift-click to step back.">
+  <div class="fill"></div><span class="k">idle</span><span class="v">—</span><span class="next"></span>
 </div>
 
 <main>
@@ -659,7 +676,7 @@ function curveAt(pts, x) {
 }
 /* effective tok/s for a base speed under the curve at prompt size x. Both
    phases and every display read this, so the floor and the % math can't
-   disagree between the model and the chips. */
+   disagree between the model and the phase bar. */
 function effRate(base, pts, x) {
   return Math.max(1, base * curveAt(pts, x) / 100);
 }
@@ -763,7 +780,7 @@ const GAP_USER_MS = 150, GAP_TOOL_MS = 120;
 
 /* The bar under the topbar drawn to scale: TL.items reduced to one band per phase
    run, edge to edge over [0, duration]. Reads the same latencyStart / prefillStart
-   / decodeStart / end fields phaseAt reads, so the coloured bands and the chips
+   / decodeStart / end fields phaseAt reads, so the coloured bands and the phase bar
    cannot disagree about where a phase is. Time that belongs to no phase — the
    inter-turn gaps, and anything before the first event — is its own 'gap' band so
    the bands always sum to the duration the clock shows. Zero-length runs (no queue
@@ -801,7 +818,7 @@ function buildTimeline() {
   const session = SESSIONS.find(s => s.id === config.session) || SESSIONS[0];
   const pts = config.curve;
   /* the parameter vector this timeline was built from. Every downstream read
-     (chips, ledger, summary, boot banner) goes through TL.params, so a deferred
+     (phase bar, ledger, summary, boot banner) goes through TL.params, so a deferred
      rebuild (rAF-coalesced during drags/typing) can never render live settings
      against an older timeline. The curve is copied: the editor mutates
      config.curve in place. */
@@ -957,8 +974,8 @@ for (const s of SESSIONS) {
 
 /* ------------------------------ DOM build ------------------------------- */
 const transcript = $('#transcript');
-const chips = {};
-document.querySelectorAll('.chip').forEach(c => { chips[c.dataset.phase] = c; });
+const PHASE_BAR = $('#phase'), PHASE_K = $('#phase .k'), PHASE_V = $('#phase .v'), PHASE_F = $('#phase .fill'),
+      PHASE_NEXT = $('#phase .next');
 
 function el(tag, cls, txt) {
   const e = document.createElement(tag);
@@ -996,6 +1013,10 @@ function renderDOM() {
           tokHost = box;
         } else {
           box = el('div', 'toolcall');
+          /* framed and labelled, so it has to start hidden the way the cursor does: the
+             message is built before the request is even queued, and a call box standing
+             there empty would promise a call nobody has made yet */
+          box.style.display = 'none';
           const bt = el('div', 'tag');
           bt.appendChild(el('span', null, 'tool call'));
           bt.appendChild(el('span', 'rt', s.name));
@@ -1073,19 +1094,25 @@ function buildLedger() {
 
 /* ------------------------------- rendering ------------------------------ */
 let vTime = 0, playing = false, anchorWall = 0, anchorV = 0, raf = 0, userScrolled = false;
+/* followTop remembers where follow() itself put the pane, because the browser delivers
+   that scroll as an event like any other and the pane must not read its own motion as a
+   reader taking over */
+let followTop = null;
 
-function setChip(phase, on, text, frac) {
-  const c = chips[phase];
-  if (!c) return;
-  c.classList.toggle('on', !!on);
-  c.querySelector('.v').textContent = text;
-  c.querySelector('.fill').style.width = (clamp(frac || 0, 0, 1) * 100).toFixed(1) + '%';
+/* One rectangle for the whole run: it takes the phase's name, its colour (through
+   --c, via the data-phase attribute) and its own progress, so there is no idle chip
+   to reset and nothing to dim back to — the bar always says what is happening now. */
+function setPhase(phase, text, frac) {
+  PHASE_BAR.dataset.phase = phase;
+  PHASE_K.textContent = PHASE_NAME[phase] || phase;
+  PHASE_V.textContent = text;
+  PHASE_F.style.width = (clamp(frac || 0, 0, 1) * 100).toFixed(1) + '%';
 }
-function resetChips() { for (const k in chips) setChip(k, false, '—', 0); }
 
 /* band titles carry the phase and its own duration, so hovering the bar reads as
    a legend for the run rather than a strip of decorative colour */
-const PHASE_NAME = { queue: 'queue', prefill: 'prefill', decode: 'decode', tool: 'tool exec', gap: 'turn gap' };
+const PHASE_NAME = { queue: 'queue', prefill: 'prefill', decode: 'decode', tool: 'tool exec',
+                     gap: 'turn gap', idle: 'idle', done: 'run complete' };
 
 /* Both strips hold the whole timeline and only differ by the clip, so the bands
    are laid out once per rebuild and a frame costs one style write. */
@@ -1120,7 +1147,10 @@ function phaseAt(t) {
         const d = item.decodeStart - item.prefillStart;
         return { phase: 'prefill', frac: d > 0 ? (t - item.prefillStart) / d : 1, item };
       }
-      if (t <= item.end) {
+      /* the end is exclusive: a band boundary belongs to the phase that starts there,
+         which is what the colour under the playhead already says, so the bar, the head
+         and the band agree instead of the bar naming the phase that just finished */
+      if (t < item.end) {
         const d = item.end - item.decodeStart;
         return { phase: 'decode', frac: d > 0 ? (t - item.decodeStart) / d : 1, item };
       }
@@ -1138,6 +1168,38 @@ function countTokens(times, t) {
   return lo;
 }
 
+/* scroll the active block into view. What "in view" means depends on how the block
+   arrives: a tool result or the next user message lands all at once, so its beginning is
+   what you want, while an assistant message grows token by token and should keep showing
+   its newest line. */
+function follow(item) {
+  const el = item && item.el;
+  if (!el) return;
+  const c = transcript.getBoundingClientRect(), b = el.getBoundingClientRect();
+  /* aim a little inside the pane rather than at its edge, so a line never sits flush
+     against the border, where the pane's own padding would clip half of it */
+  if (item.kind === 'assistant') {
+    /* terminal rule: keep the live line on screen; if the playhead jumped back above this
+       block, come back down to it */
+    if (b.bottom > c.bottom - 12 || b.bottom < c.top) scrollBy(b.bottom - (c.bottom - 12));
+  } else if (Math.abs(b.top - (c.top + 10)) > 2) {
+    /* a block that arrives whole is read from its first line, even when a few lines of it
+       are already peeking in at the bottom of the pane — one visible line of a long tool
+       result is not a place to start reading */
+    scrollBy(b.top - (c.top + 10));
+  }
+}
+
+/* one clamped write: scrollTop has no clamping of its own mid-layout, and a negative write
+   would fight the browser */
+function scrollBy(delta) {
+  if (!delta) return;
+  const top = Number(transcript.scrollTop);
+  const max = Math.max(0, (Number(transcript.scrollHeight) || 0) - (Number(transcript.clientHeight) || 0));
+  followTop = clamp((Number.isFinite(top) ? top : 0) + delta, 0, max);
+  transcript.scrollTop = followTop;
+}
+
 function render(t) {
   const P = TL.params;
   const itemForReq = {};
@@ -1149,6 +1211,9 @@ function render(t) {
     for (const s of item.segs) {
       if (s.last !== 0) { s.last = 0; s.tokEl.textContent = ''; }
       s.cursorEl.style.display = 'none';
+      /* the framed call box goes back with its tokens, so rewinding a run does not leave
+         a framed box standing over an empty argument list */
+      if (s.seg.kind === 'tool') s.node.style.display = 'none';
     }
   };
   for (const item of TL.items) {
@@ -1169,6 +1234,16 @@ function render(t) {
             const mine = n > from && n < from + len;
             const lastSeg = s === item.segs[item.segs.length - 1];
             s.cursorEl.style.display = (mine || (!done && n >= from + len && lastSeg)) ? '' : 'none';
+            /* a call does not exist until the model starts emitting it. The box is framed
+               and labelled, so showing it from the start would announce, through queue,
+               prefill and the prose half of decode, a tool call that has not been made —
+               the one thing the stream is not supposed to give away early. A call with no
+               argument tokens has nothing to stream, so it appears when the stream reaches
+               the position it occupies rather than waiting on a token that never comes. */
+            if (s.seg.kind === 'tool') {
+              const begun = len > 0 ? n > from : n >= from && n > 0;
+              s.node.style.display = begun ? '' : 'none';
+            }
           }
         }
         const q = item.req;
@@ -1192,29 +1267,46 @@ function render(t) {
     }
   }
 
-  const p = phaseAt(t);
+  /* both ends of the run are states of it rather than phases inside it: at zero nothing
+     has been asked yet, at the far end the last token is already out — and phaseAt
+     reports decode at exactly that instant, which would read as if it were still running */
+  const p = t <= 1e-9 || t >= TL.duration - 1e-9 ? null : phaseAt(t);
   if (!p) {
-    resetChips();
+    /* phaseAt is null both between phases and outside the run, so the band list says
+       which: a gap band is harness round-trip time, anything else is before or after */
+    const g = t >= TL.duration - 1e-9 || t <= 1e-9 ? null
+      : TL.segments.find((s) => s.phase === 'gap' && t >= s.from && t < s.to);
+    if (g) setPhase('gap', fmtDur(g.to - g.from) + ' round trip · no inference, no tool running',
+                    (t - g.from) / Math.max(1e-9, g.to - g.from));
+    else if (t >= TL.duration - 1e-9) setPhase('done', TL.stats.requests + ' requests · ' +
+      fmtTok(TL.stats.outTokens) + ' tok out · ' + fmtDur(TL.duration) + ' total', 1);
+    else setPhase('idle', TL.stats.requests + ' requests · ' + fmtDur(TL.duration) + ' · press run', 0);
   } else if (p.phase === 'queue') {
-    resetChips();
-    setChip('queue', true, fmtDur(p.item.req.queueMs / 1000) + ' wait · req #' + p.item.req.no, p.frac);
-    setChip('prefill', false, fmtDur(p.item.req.prefillMs / 1000) + ' queued', 0);
+    const q = p.item.req;
+    setPhase('queue', 'req #' + q.no + ' · ' + fmtDur(q.queueMs / 1000) + ' wait · ' +
+            fmtDur(q.prefillMs / 1000) + ' prefill next', p.frac);
   } else if (p.phase === 'prefill') {
-    resetChips();
     const q = p.item.req;
     const eff = effRate(P.prefill, P.curve, q.cached + q.cold * p.frac);
-    setChip('prefill', true, fmtTok(q.cold * p.frac) + ' / ' + fmtTok(q.cold) + ' tok ingested · ' +
-            (q.cached ? fmtTok(q.cached) + ' reused' : 'cold') + ' @ ' + fmtTok(eff) + ' tok/s', p.frac);
+    setPhase('prefill', 'req #' + q.no + ' · ' + fmtTok(q.cold * p.frac) + ' / ' + fmtTok(q.cold) +
+            ' tok ingested · ' + (q.cached ? fmtTok(q.cached) + ' reused' : 'cold') +
+            ' @ ' + fmtTok(eff) + ' tok/s', p.frac);
   } else if (p.phase === 'decode') {
-    resetChips();
     const q = p.item.req, n = countTokens(p.item.times, t);
-    const inst = n / Math.max(1e-9, t - p.item.decodeStart);
+    /* at the first instant of decode there is no measured rate yet, and reporting 0
+       tok/s would read as a stall rather than a start */
     const cap = effRate(P.decode, P.curve, q.ctx + n);
-    setChip('decode', true, n + '/' + q.out + ' tok · ' + inst.toFixed(0) + ' tok/s (cap ' + cap.toFixed(0) + ')', p.frac);
+    const inst = n > 0 ? n / Math.max(1e-9, t - p.item.decodeStart) : cap;
+    setPhase('decode', 'req #' + q.no + ' · ' + n + '/' + q.out + ' tok · ' + inst.toFixed(0) +
+            ' tok/s (cap ' + cap.toFixed(0) + ')', p.frac);
   } else {
-    resetChips();
-    setChip('tool', true, p.item.name + ' · ' + fmtDur(p.item.at - p.item.from), p.frac);
+    setPhase('tool', p.item.name + ' · ' + fmtDur(p.item.at - p.item.from), p.frac);
   }
+  /* the hint is the control's label: it names where a click lands, and stepPhase reads
+     the same boundary, so the two cannot disagree about where the next phase starts */
+  const nb = TL.segments.find((s) => s.from > t + 1e-6);
+  PHASE_NEXT.textContent = nb ? '→ ' + PHASE_NAME[nb.phase] + ' · ' + fmtDur(nb.to - nb.from)
+                              : '→ end of run';
 
   for (const r of TL.reqs) {
     const item = itemForReq[r.no];
@@ -1244,10 +1336,12 @@ function render(t) {
   $('#seek .head').style.left = 'calc(' + (frac * 100) + '% - 1px)';
   $('#seek').dataset.phase = p ? p.phase : '';
 
-  if (!userScrolled) {
-    const far = transcript.scrollHeight - transcript.scrollTop - transcript.clientHeight;
-    if (far > 24) transcript.scrollTop = transcript.scrollHeight - transcript.clientHeight;
-  }
+  /* keep the phase you are watching on screen, which means different things depending on
+     how the block arrives: a tool result or the next user message lands all at once, so
+     its beginning is what you want to see, while an assistant message grows token by token
+     and should keep showing its newest line. Scrolling up disengages this, returning to
+     the bottom re-engages it, and any explicit navigation does too — see seek(). */
+  if (!userScrolled) follow(p ? p.item : null);
 }
 
 function loop() {
@@ -1275,6 +1369,9 @@ function togglePlay() { if (playing) pause(); else play(); }
 function seek(t) {
   vTime = clamp(t, 0, TL.duration);
   if (playing) { anchorWall = performance.now(); anchorV = vTime; }
+  /* moving the playhead on purpose means you want to see where it landed, so explicit
+     navigation takes the transcript back over from a reader who scrolled elsewhere */
+  userScrolled = false;
   updatePlayBtn(); render(vTime);
 }
 
@@ -1673,7 +1770,31 @@ $('#theme').addEventListener('click', () => {
   updateShare();
 });
 $('#panelToggle').addEventListener('click', () => document.body.classList.toggle('no-panel'));
+/* shift steps backwards, so one rectangle covers both directions */
+$('#phase').addEventListener('click', (e) => stepPhase(e.shiftKey ? -1 : 1));
 $('#reset').addEventListener('click', () => { location.href = location.pathname; });
+
+/* the phase bar is also a control: it steps the playhead to the next phase boundary,
+   which is how you walk a session turn by turn instead of hunting the seek bar for the
+   edge of a band. Boundaries come from TL.segments, the same list the bands are painted
+   from, so a click lands exactly where the colour changes. */
+function stepPhase(dir) {
+  const eps = 1e-6;
+  const seg = TL.segments;
+  if (dir > 0) {
+    const next = seg.find((s) => s.from > vTime + eps);
+    seek(next ? next.from : TL.duration);
+  } else {
+    /* stepping back lands on the start of the current phase unless we are already
+       within a hair of it, in which case the previous phase is next */
+    const here = seg.find((s) => vTime >= s.from - eps && vTime < s.to - eps);
+    if (here && vTime - here.from > 0.2) seek(here.from);
+    else {
+      const prev = seg.slice().reverse().find((s) => s.from < vTime - eps);
+      seek(prev ? prev.from : 0);
+    }
+  }
+}
 
 /* seek by click / drag */
 (function seekDrag() {
@@ -1689,14 +1810,19 @@ $('#reset').addEventListener('click', () => { location.href = location.pathname;
   bar.addEventListener('pointercancel', () => { dragging = false; });
 })();
 
-transcript.addEventListener('wheel', () => {
-  const far = transcript.scrollHeight - transcript.scrollTop - transcript.clientHeight;
-  userScrolled = far > 60;
+transcript.addEventListener('wheel', (e) => {
+  /* wheeling up means "show me the older part", so it takes the pane away from the sim.
+     Wheeling down does not: follow() sometimes holds a tall block by its first line, and
+     then being far from the bottom is the normal state, not a reader taking over. */
+  if (e.deltaY < 0) userScrolled = true;
 }, { passive: true });
+
 transcript.addEventListener('scroll', () => {
-  const far = transcript.scrollHeight - transcript.scrollTop - transcript.clientHeight;
-  if (far > 60) userScrolled = true;
-  else if (far < 8) userScrolled = false;
+  /* recognise our own scroll by the position we set, not by counting events, since the
+     browser is free to coalesce them — and a reader who has caught up with the live edge
+     gets the pane back */
+  if (followTop !== null && Math.abs(transcript.scrollTop - followTop) < 2) return;
+  userScrolled = transcript.scrollHeight - transcript.scrollTop - transcript.clientHeight > 8;
 }, { passive: true });
 
 document.addEventListener('keydown', (e) => {
@@ -1751,7 +1877,10 @@ syncEngine();
 syncContention();
 rebuild();
 if (config.autoplay) play(); else { updatePlayBtn(); render(vTime); }
-window.AS = { config, sessions: SESSIONS, profileStats, get tl() { return TL; }, rebuild, seek, play, pause, phaseAt, render };
+/* the console and the selftest both want to know where the playhead actually is, as
+   opposed to what the clock says after formatting */
+window.AS = { config, sessions: SESSIONS, profileStats, get tl() { return TL; }, get vTime() { return vTime; },
+              rebuild, seek, play, pause, phaseAt, render, stepPhase };
 </script>
 </body>
 </html>

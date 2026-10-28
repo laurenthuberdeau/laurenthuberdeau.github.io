@@ -81,8 +81,51 @@ tokens by how much history they have to attend to.
 
 ## Controls
 
+Under the header, one rectangle says what the engine is doing right now. It names the phase,
+takes that phase's colour — heading, a stripe down its left edge, and a wash that fills as the
+phase itself progresses — and carries the numbers for it: `prefill · req #4 · 5.9k / 12k tok
+ingested · 118k reused @ 1.4k tok/s`. Four boxes, one per phase, would have been mostly idle
+space, so the phase that is not running simply is not shown. The times between phases get the
+same rectangle with the neutral treatment: a *turn gap* is the harness round trip, which belongs
+to neither the engine nor the tool, and before you press run and after the last token the bar
+reads `idle` and `run complete` rather than pretending something is still streaming.
+
+**Click it to step.** The bar jumps the playhead to the next phase boundary — `click` forward,
+`shift-click` back — and its right-hand hint names where a click lands (`→ prefill · 8.62s`, or
+`→ end of run` when there is nothing left). It lands on the same boundaries the seek bar is
+painted from, so it walks the run band by band: queue, prefill, decode, tool exec, the gap after
+it, the next request. That is how you compare one prefill against the next without trying to hit
+the edge of a band with the pointer; the seek bar itself still scrubs freely by click or drag.
+
 `space` play/pause · `R` restart · `←` `→` seek one second (`shift` for five) ·
-`1`–`7` playback speed · `P` toggle panel. The **session summary is the first card in the
+`1`–`7` playback speed · `P` toggle panel.
+
+The transcript follows the run by itself. A message that is still streaming is held a hand's
+width above the bottom edge of the pane, so the live line stays the live line; a block that
+arrives all at once — a tool result, the next user message, a compaction — is placed by its
+*first* line
+instead, because the long results in these corpuses are taller than the pane and pinning
+their bottom would drop you into the last screenful and never show the beginning. Scroll up
+and the pane is yours again; return to the live edge, or move the playhead by any route — the
+seek bar, a click on the phase bar, `←` `→` — and the sim takes it back. It knows its own
+scrolls from yours, so following a tall block by its first line does not read as you having
+taken over. That hand's width is also the pane's entire bottom padding, and that is the whole
+reason it is small: a scroll container counts its own padding in its scroll height, so the
+`26vh` this pane used to carry made it overflow its own content and wear a scrollbar on a
+session of three short messages — and the bar should mean *there is more to read*, not *there
+is blank space below*.
+
+Nothing in a message shows up before the stream produces it. The framed **tool call** box —
+the block that reads `tool call · Bash` over the arguments as they are generated — is built
+along with the message but stays hidden until the model starts emitting it: its first argument
+token, or for a call with no arguments the moment the prose before it ends. So it never sits
+framing nothing through queue, prefill and the prose half of decode. That is the one thing a
+replay should not give away early: in a real session you learn the model reached for a tool
+when it starts emitting the call, not while it is still writing the sentence that leads up to
+it. Seek back past the message and the box goes away again with its tokens; a finished run
+shows every call it made.
+
+The **session summary is the first card in the
 panel**, because it is the thing you come back to after every settings change: it leads with
 `total` and `prefill : decode` — the split between the two faces of inference, `12:1` for
 `long-log`, `0.54:1` for `doc` — then the phases, the context, and how much prefill the prompt
@@ -102,9 +145,10 @@ scenario pauses and rewinds to zero rather than rolling straight into the new ru
 `autoplay` governs the page load only.
 
 The seek bar is the timeline drawn to scale rather than a progress fill: one band per phase
-run, in the colour of that phase's chip — queue white, prefill amber, decode green, tool
+run, in that phase's colour — queue white, prefill amber, decode green, tool
 exec purple, turn gaps neutral — dimmed ahead of the playhead and full strength behind it,
-the playhead itself taking the colour of the phase it sits in. Queue gets the absence of
+the playhead itself taking the colour of the phase it sits in, the same encoding the phase bar
+above wears. Queue gets the absence of
 colour because nothing happens to your prompt while it waits for a slot, and prefill the
 amber because at bar height blue prefill sat too close to green decode to tell apart; the
 light theme inverts white queue to a dark neutral, white on white being no band at all.
@@ -140,7 +184,28 @@ index.html?session=long-log&prefill=60000&decode=240&latency=2500&jitter=1500&ca
 timeline and firing the transport, keyboard, settings, curve editor, and seek handlers. It
 also checks the seek bar's bands: they tile the duration with nothing doubled or missed, each
 band's phase is the one `phaseAt` reports at its midpoint, and every band phase has a colour
-in both themes — so the bar cannot drift from the chips or go invisible on one palette.
+in both themes — so the bar cannot drift from the phase bar or go invisible on one palette. That
+bar is read back at the centre of every band too: whatever colour the timeline is painted, the
+bar standing over it has to name the same phase, and every state it can wear must have a colour
+rule and a heading of its own, or it would render grey-on-grey and look like a dead control. Its
+stepping is checked the same way — click from zero must land on each band start in turn, must
+stop at the end of the run rather than wrapping, and `shift-click` must walk back the same
+boundaries, including from a boundary itself, where a naive implementation would be a no-op.
+
+The transcript's follow is measured against a synthetic layout, because the shim has no box
+model: the test gives the pane a height, stacks the blocks, and lets a block's reported
+position move with `scrollTop` the way a scroll container's does. A block that arrives whole
+must end up with its first line at the top of the pane, and a block that is still streaming
+must end with its live line on screen — and because the shim's tool results are made taller
+than the pane, the second rule cannot be satisfied by the shortcut of pinning the bottom of
+the transcript, which is what the follow used to do. A framed tool-call box is sampled on
+either side of the exact instant it becomes real — 50 ms before its first argument token it
+must be hidden, at the token it must be visible, and once the playhead goes back past the
+message it must be hidden again — and a run played to the end must show every call it made, so
+the rule cannot be satisfied by simply never showing one. One check crosses the layer boundary
+to compare the pane's bottom padding with the inset the follow code asks for, because the two
+have to stay equal: any more reserved space and a session that fits on screen still overflows
+and shows a scrollbar, any less and the streaming line is clamped flush against the pane edge.
 
 After the handlers it walks the whole corpus, not just the scenario the URL picked, and holds
 every entry to the same shape: it opens on a user turn and closes on a tool-free assistant

@@ -47,6 +47,8 @@ class El {
 
 const cache = new Map();
 const PHASES = ['queue', 'prefill', 'decode', 'tool'];
+const PHASE_LABEL = { queue: 'queue', prefill: 'prefill', decode: 'decode', tool: 'tool exec', gap: 'turn gap' };
+const PHASE_STATES = [...PHASES, 'gap', 'idle', 'done'];
 const docListeners = {};
 /* ids present in the real markup. The shim resolves CSS ids against these so
    HTML <-> JS drift (a JS $() referencing a renamed/removed id) fails loudly
@@ -72,9 +74,8 @@ const document = {
     }
     const e = new El(sel === '#curveChart' || sel.indexOf('curveChart') >= 0 ? 'svg' : 'div'); cache.set(sel, e); return e;
   },
-  querySelectorAll: (sel) => sel === '.chip'
-    ? PHASES.map((p) => { const e = new El('div'); e.dataset.phase = p; e.appendChild(new El('div')); e.appendChild(new El('div')); e.appendChild(new El('div')); return e; })
-    : sel === '[data-curve]' ? ['flat', 'gentle', 'steep', 'cliff'].map((c) => { const e = new El('button'); e.dataset.curve = c; return e; }) : [],
+  querySelectorAll: (sel) => sel === '[data-curve]'
+    ? ['flat', 'gentle', 'steep', 'cliff'].map((c) => { const e = new El('button'); e.dataset.curve = c; return e; }) : [],
 };
 const fireDoc = (type, ev) => (docListeners[type] || []).forEach((fn) => guard('doc ' + type, () => fn({ type, target: { tagName: 'BODY' }, preventDefault() {}, ...ev })));
 
@@ -104,9 +105,20 @@ ok('autoplay starts playback on load', AS.config.autoplay
   ? $('#play').textContent.indexOf('pause') !== -1
   : $('#play').textContent.indexOf('pause') === -1, JSON.stringify($('#play').textContent));
 
-/* --- playback sweep --- */
+/* --- playback sweep ---
+   the phase bar is the only place the run says what it is doing, so sample it as the
+   playhead moves: its heading must be the phase phaseAt reports, and between phases it
+   must name the non-phase it is in rather than freeze on the last one */
 AS.seek(0); pump();
-for (let t = 0; t < AS.tl.duration; t += AS.tl.duration / 200) { AS.seek(t); pump(); }
+const BAR = [];
+for (let t = 0; t < AS.tl.duration; t += AS.tl.duration / 200) {
+  AS.seek(t); pump();
+  const ph = AS.phaseAt(t);
+  /* the two ends of the run are states of the run, so the bar is allowed to name those
+     instead of the phase that owns the very first / very last instant of it */
+  BAR.push([ph ? ph.phase : 'none', $('#phase').dataset.phase, $('#phase .v').textContent,
+            $('#phase .k').textContent, t <= 1e-6 || t >= AS.tl.duration - 1e-6]);
+}
 AS.seek(AS.tl.duration); pump();
 
 const TL = AS.tl, S = TL.stats;
@@ -148,7 +160,7 @@ ok('phase: queue', AS.config.latency + AS.config.jitter > 0 ? seen.has('queue') 
 /* --- seek bar bands ---
    the bar is drawn from TL.segments, so the tiling has to be exact and every band
    has to sit where phaseAt agrees the phase is; otherwise the colour under the
-   playhead would disagree with the chips above it. */
+   playhead would disagree with the phase bar above it. */
 const SEG = TL.segments;
 ok('bands span the run', SEG.length > 0 && SEG[0].from === 0 &&
    Math.abs(SEG[SEG.length - 1].to - TL.duration) < 1e-6,
@@ -157,10 +169,108 @@ ok('bands are contiguous and ordered', SEG.every((s, i) =>
    s.to > s.from && (i === 0 || Math.abs(s.from - SEG[i - 1].to) < 1e-9)));
 ok('bands cover each second once',
    Math.abs(SEG.reduce((a, s) => a + s.to - s.from, 0) - TL.duration) <= 1e-6);
-ok('band colour matches the phase it covers', SEG.every((s) => {
-   const p = AS.phaseAt((s.from + s.to) / 2);
+ok('band colour matches the phase it covers', SEG.every((s) => {   const p = AS.phaseAt((s.from + s.to) / 2);
    return p ? p.phase === s.phase : s.phase === 'gap';
 }), [...new Set(SEG.map((s) => s.phase))].join(' '));
+/* stand in the middle of every band and read the bar: the coarse sweep can step over a
+   1.8s queue, a band centre cannot, so this is what proves the bar names every phase the
+   run actually has — the same fact the band above it is painted for */
+ok('phase bar names every band', SEG.every((s) => {
+   const mid = (s.from + s.to) / 2;
+   AS.seek(mid); pump();
+   const ph = AS.phaseAt(mid);
+   return $('#phase').dataset.phase === (ph ? ph.phase : 'gap');
+}), SEG.map((s) => (s.phase === 'gap' ? '·' : s.phase[0])).join(''));
+AS.seek(AS.tl.duration); pump();   /* leave the playhead where the sweep left it */
+ok('phase bar names the phase the playhead is in', BAR.every(([ph, dom, , , edge]) => edge
+   ? ['idle', 'done', 'gap'].includes(dom)
+   : ph === dom || (ph === 'none' && ['gap', 'idle', 'done'].includes(dom))),
+   [...new Set(BAR.map(([ph, dom]) => ph + '\u2192' + dom))].join(' '));
+/* the bar has no idle sibling to fall back on, so an empty detail line would read as a
+   bug in the run rather than a quiet moment in it */
+ok('phase bar always has something to say', BAR.every(([,, v, k]) => k.length > 1 && v.length > 4),
+   BAR.length + ' samples, shortest detail ' + Math.min(...BAR.map(([, , v]) => v.length)) + ' chars');
+/* --- transcript follow -------------------------------------------------------------
+   The shim has no box model, so give the pane one: blocks stack down the page and report
+   positions relative to the pane's scrollTop, the way a scroll container does. Tool blocks
+   are made taller than the pane on purpose — these corpuses are full of long tool results,
+   and a block that cannot fit is exactly where following the bottom edge would drop the
+   reader on its last screenful instead of its first. */
+const PANE = 400;
+/* the follow insets the page aims for; duplicated here on purpose — if the two disagree the
+   check below measures the wrong target, which is exactly the drift worth catching */
+const TOP_INSET = 10, BOT_INSET = 12;
+const TR = $('#transcript');
+TR.scrollTop = 0; TR.clientHeight = PANE;
+TR.getBoundingClientRect = () => ({ top: 0, bottom: PANE, height: PANE, left: 0, right: 320, width: 320 });
+let stackY = 0;
+for (const blk of TR.children) {
+  blk._top = stackY;
+  blk._h = String(blk.className).includes('msg tool') ? 700 : 120;
+  stackY += blk._h + 8;
+  blk.getBoundingClientRect = () => {
+    const t = blk._top - (TR.scrollTop || 0);
+    return { top: t, bottom: t + blk._h, height: blk._h, left: 0, right: 320, width: 320 };
+  };
+}
+TR.scrollHeight = stackY;
+const maxTop = Math.max(0, stackY - PANE);
+const FOLLOW = [];
+for (const item of TL.items) {
+  const mid = item.kind === 'assistant' ? (item.decodeStart + item.end) / 2
+            : item.kind === 'tool' ? (item.from + item.at) / 2 : null;
+  if (mid === null || mid <= 0 || mid >= TL.duration || !item.el) continue;
+  AS.seek(mid); pump();
+  const b = item.el.getBoundingClientRect();
+  FOLLOW.push({ kind: item.kind, h: item.el._h, top: Math.round(b.top),
+    bottom: Math.round(b.bottom), st: TR.scrollTop });
+}
+/* the pane cannot always place a block exactly where it wants — the last blocks have
+   nothing below them to scroll past — so hitting the end of the scroll range counts */
+const atLimit = (f) => f.st >= maxTop - 1.5;
+const wholeF = FOLLOW.filter((f) => f.kind !== 'assistant');
+ok('a block that arrives whole opens on its first line',
+   wholeF.some((f) => f.h > PANE) &&
+   wholeF.every((f) => (f.top >= TOP_INSET - 2 && f.top <= TOP_INSET + 14) || atLimit(f)),
+   wholeF.map((f) => f.h + 'px@' + f.top).join(' '));
+ok('a streaming block keeps its live line on screen',
+   FOLLOW.filter((f) => f.kind === 'assistant').every((f) => f.bottom <= PANE - BOT_INSET + 2 || atLimit(f)),
+   FOLLOW.filter((f) => f.kind === 'assistant').map((f) => f.bottom).join(' '));
+ok('following the run moves the pane', TR.scrollTop > 0, 'scrollTop ' + Math.round(TR.scrollTop) +
+   ' of ' + maxTop + ' over ' + FOLLOW.length + ' blocks');
+/* the framed tool-call box is built with the message, so it has to be *hidden* until the
+   stream reaches it: showing it from the start would announce a tool call through queue,
+   prefill and the prose half of decode, which is the one thing a replay should not give
+   away before it happens. The instant it becomes real is the token time of its first
+   argument token, so sample either side of that exact instant. */
+const CALLS = [];
+for (const item of TL.items) {
+  if (item.kind !== 'assistant' || !item.segs) continue;
+  for (const s of item.segs) {
+    if (s.seg.kind !== 'tool') continue;
+    /* the instant a call becomes real: its first argument token, or — for a call with no
+       argument tokens, which has nothing to stream — the last token of the prose before it */
+    const first = s.seg.tokens.length > 0 ? item.times[s.seg.from] : item.times[s.seg.from - 1];
+    AS.seek(Math.max(0, first - 0.05)); pump();
+    const before = String(s.node.style.display);
+    AS.seek(first); pump();
+    const after = String(s.node.style.display);
+    /* and it must survive rewinding past the message, or a run replayed twice shows a
+       framed box standing over an emptied argument list */
+    AS.seek(0); pump();
+    CALLS.push({ before, after, afterRewind: String(s.node.style.display) });
+  }
+}
+AS.seek(TL.duration); pump();
+const shownAtEnd = TL.items.filter((i) => i.kind === 'assistant').flatMap((i) => i.segs || [])
+  .filter((s) => s.seg.kind === 'tool' && s.node.style.display === 'none');
+ok('a finished run shows every call it made', shownAtEnd.length === 0,
+   shownAtEnd.length + ' call boxes still hidden at the end of the run');
+ok('a tool call appears with its first token and not before',
+   CALLS.length > 0 && CALLS.every((c) => c.before === 'none' && c.after === '' && c.afterRewind === 'none'),
+   CALLS.length + ' calls sampled; one visible 50ms early = ' +
+   CALLS.some((c) => c.before !== 'none') + ', none return on rewind = ' +
+   CALLS.every((c) => c.afterRewind === 'none'));
 const gapSecs = SEG.filter((s) => s.phase === 'gap').reduce((a, s) => a + s.to - s.from, 0);
 ok('unlabelled bands are exactly the summary gaps', Math.abs(gapSecs * 1000 - S.gapMs) <= 1e-6,
    gapSecs.toFixed(2) + 's of ' + SEG.length + ' bands');
@@ -177,6 +287,40 @@ const palettes = [/:root \{([\s\S]*?)\n  \}/, /html\[data-theme="light"\] \{([\s
 const hexOf = (block, name) => (block.match(new RegExp(name + ':\\s*(#[0-9a-fA-F]+)')) || [, ''])[1].toLowerCase();
 const bandRule = (ph) => (STYLE.match(new RegExp('\\.seek \\.seg\\[data-phase="' + ph + '"\\][^{]*\\{([^}]*)\\}')) || [, ''])[1];
 const BANDS = [...new Set(SEG.map((s) => s.phase))];
+/* the bar paints heading, stripe and wash from --c. Check every state it could ever
+   wear, not just the ones this scenario happened to reach: a state with no colour rule
+   renders grey-on-grey, and one with no heading renders an empty name — both read as a
+   broken run rather than a quiet moment in it */
+const barRule = (st) => (STYLE.match(new RegExp('\\.phasebar\\[data-phase="' + st + '"\\][^{]*\\{([^}]*)\\}')) || [, ''])[1];
+const PHASE_NAME_SRC = (src.match(/const PHASE_NAME = \{([^}]*)\}/) || [, ''])[1];
+const named = (st) => (PHASE_NAME_SRC.match(new RegExp('\\b' + st + "\\s*:\\s*'([^']+)'")) || [, ''])[1];
+/* a scroll container counts its own bottom padding in the scroll height, so generous or
+   viewport-relative padding makes the pane wear a scrollbar while every message still fits.
+   The bar should mean "there is more to read", never "there is blank space below" — and
+   since blocks are revealed by opacity, the run's full height is always there, so any
+   reserved space at all shows up as overflow on a short session. */
+const TR_RULES = [...STYLE.matchAll(/\.transcript \{([^}]*)\}/g)].map((m) => m[1]);
+const padOf = (body, prop) => (body.match(new RegExp(prop + ':\\s*([^;]+)')) || [, ''])[1];
+const bottomOf = (body) => {
+  const long = padOf(body, 'padding-bottom');
+  if (long) return long;
+  const p = padOf(body, 'padding').trim().split(/\s+/);
+  return p.length >= 3 ? p[2] : p[0] === '' ? '' : (p[1] || '');
+};
+const trPad = Math.max(...TR_RULES.map((r) => parseFloat(bottomOf(r) || '0') || 0));
+ok('the transcript never reserves viewport-sized space below its content',
+   TR_RULES.length > 0 && TR_RULES.every((r) => !/v[hv]/.test(bottomOf(r)) &&
+     (bottomOf(r) === '' || parseFloat(bottomOf(r)) <= 18)),
+   'padding-bottom ' + TR_RULES.map((r) => bottomOf(r) || 'none').join(' / '));
+/* and the reservation is exactly the gap follow() leaves under a streaming line: any more
+   and a session that fits on screen still overflows and shows a bar, any less and the live
+   line is clamped flush against the pane edge */
+ok('the pane reserves exactly the gap the follow asks for', trPad === BOT_INSET,
+   'padding-bottom ' + trPad + 'px vs follow inset ' + BOT_INSET + 'px');
+ok('every phase-bar state has a colour and a heading',
+   PHASE_STATES.every((st) => /--c:\s*var\(--[\w-]+\)/.test(barRule(st)) && named(st)),
+   PHASE_STATES.map((st) => st + '=' + (named(st) || '?') + '/' +
+     (barRule(st).match(/var\((--[\w-]+)\)/) || [, '?'])[1]).join(' '));
 ok('every band phase has a colour', BANDS.every((ph) => /background:\s*var\(--[\w-]+\)/.test(bandRule(ph))),
    BANDS.map((ph) => ph + '=' + (bandRule(ph).match(/var\((--[\w-]+)\)/) || [, '?'])[1]).join(' '));
 ok('both themes carry the whole phase palette', palettes.every((p) => [...PHASE_VARS, '--accent', '--border-2']
@@ -238,6 +382,41 @@ if (compacts.length) {
 } else {
   ok('no compactions in a non-compacting session', TL.stats.compactions === 0);
 }
+
+/* --- the phase bar as a control ---
+   it steps band by band, so walking a run turn by turn does not depend on hitting a
+   pixel of the seek bar; the landing points must be the band starts themselves */
+AS.pause();
+const SEGS = TL.segments;
+AS.seek(0); pump();
+const LAND = [];
+for (let i = 0; i < SEGS.length + 2; i++) { $('#phase').dispatch('click'); pump(); LAND.push(AS.vTime); }
+ok('phase bar steps to each band start',
+   SEGS.slice(1).every((s, i) => Math.abs(LAND[i] - s.from) < 1e-6)
+   && Math.abs(LAND[SEGS.length - 1] - TL.duration) < 1e-6,
+   LAND.slice(0, 3).map((t) => t.toFixed(2) + 's').join(' → ') + ' … ' + LAND[LAND.length - 1].toFixed(2) + 's');
+ok('stepping past the end stays put',
+   Math.abs(LAND[SEGS.length] - TL.duration) < 1e-6 && Math.abs(LAND[SEGS.length + 1] - TL.duration) < 1e-6);
+AS.seek(0); pump();
+ok('the hint names where a click lands',
+   $('#phase .next').textContent.indexOf('→ ' + PHASE_LABEL[SEGS[1].phase]) === 0,
+   $('#phase .next').textContent);
+AS.seek(TL.duration); pump();
+ok('the hint says so at the end of the run', $('#phase .next').textContent === '→ end of run',
+   $('#phase .next').textContent);
+$('#phase').dispatch('click', { shiftKey: true }); pump();
+ok('shift-click steps back a band', AS.vTime <= SEGS[SEGS.length - 1].from + 1e-6,
+   'landed at ' + AS.vTime.toFixed(2) + 's, last band starts at ' + SEGS[SEGS.length - 1].from.toFixed(2) + 's');
+/* stepping back from a band start has to leave, not stay: otherwise a double press on
+   a boundary is a no-op and the walk stalls */
+$('#phase').dispatch('click', { shiftKey: true }); pump();
+ok('shift-click from a band start goes to the one before',
+   AS.vTime <= SEGS[SEGS.length - 2].from + 1e-6,
+   'landed at ' + AS.vTime.toFixed(2) + 's, previous band starts at ' + SEGS[SEGS.length - 2].from.toFixed(2) + 's');
+AS.seek(0); pump();
+$('#phase').dispatch('click', { shiftKey: true }); pump();
+ok('shift-click at the start cannot go below zero', AS.vTime === 0, AS.vTime.toFixed(3) + 's');
+AS.seek(0); pump();
 
 /* --- handler battery --- */
 $('#play').dispatch('click'); pump();
