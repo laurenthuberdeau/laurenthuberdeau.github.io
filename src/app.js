@@ -72,7 +72,10 @@ const JITTER_SEED = 1337;
 const DEFAULTS = {
   session: 'long-log', prefill: 1500, decode: 50, latency: 300, jitter: 250,
   cache: 1,
-  speed: 1, curve: 'steep', autoplay: 1, theme: 'dark'
+  /* the page opens parked: the run is something you start rather than something that starts
+     at you. `autoplay=1` is the opt-in for a page that plays itself, and a link copied from a
+     page that was playing carries it, so a shared run still replays on its own */
+  speed: 1, curve: 'steep', autoplay: 0, theme: 'dark'
 };
 
 const Q = new URLSearchParams(location.search);

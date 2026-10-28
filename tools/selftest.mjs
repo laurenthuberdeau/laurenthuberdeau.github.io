@@ -138,6 +138,13 @@ ok('autoplay starts playback on load', AS.config.autoplay
   ? $('#play').textContent.indexOf('pause') !== -1
   : $('#play').textContent.indexOf('pause') === -1, JSON.stringify($('#play').textContent));
 
+/* the shipped default is a parked page, so pin the default itself rather than the button: this
+   harness boots with autoplay=0 in the URL either way, which is exactly the case that cannot
+   tell a flipped default from the default it replaced */
+const DEFAULTS_SRC = (src.match(/const DEFAULTS = \{[\s\S]*?\n\};/) || [''])[0];
+ok('the page loads parked by default', /autoplay:\s*0\b/.test(DEFAULTS_SRC),
+   (DEFAULTS_SRC.match(/autoplay:[^,\n]*/) || ['autoplay missing from DEFAULTS'])[0]);
+
 /* --- playback sweep ---
    the phase bar is the only place the run says what it is doing, so sample it as the
    playhead moves: its heading must be the phase phaseAt reports, and between phases it

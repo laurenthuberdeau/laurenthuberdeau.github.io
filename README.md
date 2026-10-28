@@ -52,6 +52,10 @@ on — which makes the `long-log` corpus a three minute run at 1× playback, or 
 with the cache unticked. Add `speed=4` for a quicker look, or `session=greenfield` for a
 small-context one.
 
+The page opens parked at zero rather than running at you: the transcript, the summary and the
+request table are all drawn for `t = 0`, and *run* (`space`) starts the clock. Add `autoplay=1`
+for a page that plays itself.
+
 ## Model
 
 Every model turn is one request, and every request pays four phases in order:
@@ -229,9 +233,10 @@ the surface uses. The line under the controls stays what it always was: `TTFT �
 decode 1 token`, with its own note on the terms. After the engine card comes the decay curve, and
 the Link card closes the panel. In the requests history, the
 `prefilled` column shows how many prompt tokens that request actually had to ingest. Curve table cells commit
-when the field loses focus, or on `enter`; `escape` puts the old number back. Switching
+when the field loses focus, or on `enter`; `escape` puts the old number back. Nothing plays
+itself unless it is asked to: the page loads parked, and switching
 scenario pauses and rewinds to zero rather than rolling straight into the new run, so
-`autoplay` governs the page load only.
+`autoplay=1` governs the page load only.
 
 The seek bar is the timeline drawn to scale rather than a progress fill: one band per phase
 run, in that phase's colour — queue white, prefill amber, decode green, tool
@@ -257,7 +262,7 @@ own duration.
 | `jitter`              | ± jitter on that wait in ms, drawn from a fixed seed  |
 | `curve`               | `flat`, `gentle`, `steep`, `cliff`, or `ctx:mult` points such as `0:100,32000:60` |
 | `speed`, `s`          | playback speed `0.25`–`16`                           |
-| `autoplay`            | `0` to load paused — load only, switching scenario always pauses   |
+| `autoplay`            | `1` to play on load — parked at zero by default, and switching scenario always pauses   |
 | `theme`               | `dark`, `light` — defaults to your OS preference unless set      |
 
 The Link card in the panel mirrors the live configuration, and *copy link* writes the full
