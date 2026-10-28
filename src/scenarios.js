@@ -5,6 +5,7 @@ const SESSIONS = [
   {
     id: 'greenfield',
     name: 'greenfield · small context',
+    about: 'A clean, small feature add — a --json flag on a 14-line CLI. Tiny context that never grows, tiny tool results, almost no cache to be had. The baseline the other shapes are read against: what a single focused coding turn looks like before any context, curve or cache question becomes interesting.',
     bootTokens: 6200,
     steps: [
       { role: 'user', text: 'Add a --json flag to tools/whoami.py that prints the resolved config as JSON. Keep the existing output paths untouched.' },
@@ -30,6 +31,7 @@ const SESSIONS = [
   {
     id: 'bug-hunt',
     name: 'bug hunt · medium context',
+    about: 'A flaky test that fails 1 run in 8 on CI but never locally — an ordering hazard the pool exposes only when the machine is busy. Medium, gradually growing context as grep, read and edit tighten the frame. The fault-finding arc: is the test wrong or the scheduler wrong?',
     bootTokens: 9400,
     steps: [
       { role: 'user', text: 'tests/test_scheduler.py::test_drain_order fails about 1 run in 8 on CI but never locally. Find the real cause and fix it, not with a sleep.' },
@@ -57,6 +59,7 @@ const SESSIONS = [
   {
     id: 'long-log',
     name: 'long log · context blowout',
+    about: 'An OOM in a nightly sync worker, diagnosed by reading a log that blows context up to ~126k tokens. The curve-grind showcase: prefill dominates decode (see the ratio on the right), and the cache is the whole reason the run is a couple of minutes instead of many.',
     bootTokens: 11800,
     steps: [
       { role: 'user', text: 'The nightly asset sync worker gets OOM killed around 03:10 most nights. Logs are in /var/log/sync/nightly.log. Find the cause and propose a fix.' },
@@ -87,6 +90,7 @@ const SESSIONS = [
   {
     id: 'deep-fix',
     name: 'deep fix · harness compaction',
+    about: 'A render pipeline RSS leak, with a harness compaction mid-session: context spikes to ~69k, the history is collapsed to a summary, and the prefix cache is blown away. The two-sided trade — compaction shortens the run but destroys cache reuse — visible in one session.',
     bootTokens: 12000,
     steps: [
       { role: 'user', text: 'The render pipeline RSS grows about 40MB per frame-snapshot export batch on the viewer box. Logs are in /var/log/viewer/render.log from last night\'s run. Find the leak and fix it so a batch can finish without the box swapping.' },
@@ -116,6 +120,7 @@ const SESSIONS = [
   {
     id: 'sweep',
     name: 'batch edits · cache showcase',
+    about: 'A public-API rename (close() -> shutdown()) moved everywhere in one commit: wide grep, a codemod, hand fixes, a full test run. Peak ~33k with mostly tiny fresh chunks, so most requests prefill in well under 60ms — the prompt cache working as advertised, not merely claimed.',
     bootTokens: 5400,
     steps: [
       { role: 'user', text: 'Public API rename for 0.9: SessionHandle.close() becomes SessionHandle.shutdown(). It has to move everywhere in one commit — src, tests, the docs snippets — with the deprecation shim in exactly one place and nothing internal still calling close() afterwards. Leave third_party/ alone, the vendored client is synced from upstream and we do not patch it.' },
@@ -124,8 +129,9 @@ const SESSIONS = [
         tool: { name: 'Grep', args: 'rg -n "\\.close\\(\\)" --glob "!third_party/**" src tests docs | wc -l && rg -n "\\.close\\(\\)" --glob "!third_party/**" -M 60 src tests docs' } },
       { role: 'tool', name: 'Grep', execMs: 240, simTokens: 8600, text:
 '112\nsrc/agentic/handle.py:88:        self._h.close()\nsrc/agentic/pool.py:214:                h.close()\nsrc/agentic/transport.py:402:        self.sock.close()\ntests/conftest.py:61:    def close(self):\ndocs/guide/session.md:44:    handle.close()\n… 107 more (elided)' },
-      { role: 'assistant', text:
-'112 hits, and of those 105 are handle receivers by name — handle, h, sess, session — across 27 files. The other 7 are the ones I expected: three sockets in the transport, one in the vendored client that leaked past the glob, and three in the test doubles. I am not going to hand-edit 105 sites and I am not going to hand-review them either; the codemod is the review, because it prints every site it rewrites with a line of context and refuses to touch a receiver it cannot narrow to a handle. Anything it skips is reported, so a silent miss is not possible.',
+      { role: 'assistant', cot:
+'112 hits, and I want to resist the shape of that number because the dangerous thing is not the count, it is trusting the count. 105 of these are receivers named like handles, but a name is not a type — the risk is three sockets and a vendored client that happen to wear the same name getting swept along. Hand-editing all 105 is not a guard against that, it is just slower and it lets me skim past the ones that look familiar; a blind string replace is the opposite mistake, faster and perfectly happy to rewrite the sockets. The codemod is the interesting middle, but its value is not speed, speed is a distraction. Its value is that it is forced to consider every receiver: it either narrows a name to a handle or it refuses and reports the refusal, and an explicit refusal I can read is better than a substitution I will never see. The bar that actually matters is that a silent miss is impossible — anything it cannot prove it prints, and then I read the skip list instead of pretending I read the whole diff.',
+              text: 'I am not going to hand-edit or hand-review 105 sites; the codemod is the review, because it prints every site it rewrites with a line of context and refuses to touch a receiver it cannot narrow to a handle. Anything it skips is reported, so a silent miss is not possible.',
         tool: { name: 'Bash', args: 'python tools/codemod_rename.py --old close --new shutdown --receiver-handle --glob "src/**/*.py" --glob "tests/**/*.py"' } },
       { role: 'tool', name: 'Bash', execMs: 2400, text:
 '27 files rewritten · 105 sites\nskipped 7 (receiver not provably a handle):\n  src/agentic/transport.py:402 sock\n  src/agentic/transport.py:455 sock\n  src/agentic/transport.py:501 sock\n  third_party/upstream/client.py:88 (glob excluded)\n  tests/conftest.py:61 FakeHandle.close\n  tests/doubles.py:29 RecordingHandle.close\n  tests/doubles.py:33 RecordingHandle.close\ngit diff --stat: 27 files changed, 105 insertions(+), 105 deletions(-)' },
@@ -156,6 +162,7 @@ const SESSIONS = [
   {
     id: 'oncall',
     name: 'production incident · context spike',
+    about: 'A p99 incident on the bridge: us-east alone is burning 38% of the error budget. One command pulls an 84k dump that spikes context from 13k to 97k, landing the run on the cliff curve at 96k–100k. Incident texture — kubectl, EXPLAIN ANALYZE, a five-minute SLO wait. `?curve=cliff` is the view this was written for.',
     bootTokens: 9800,
     steps: [
       { role: 'user', text: 'Paged: checkout p99 is 4.8s and we are burning 38% of the error budget in five minutes, us-east only, eu-west is clean. Get us back under SLO first and explain afterwards — I am on the bridge, send me the mitigation as a one-liner when it lands.' },
@@ -192,6 +199,7 @@ const SESSIONS = [
   {
     id: 'migration',
     name: 'backfill · tool-bound',
+    about: 'A nightly migration on a 412M-row table: a NOT NULL column and an index, with the rule that no writer may block for more than a second. Four Bash calls from 31s to 240s — minutes of tool exec against a fraction of inference. The shape where every "LLM latency" argument is simply wrong.',
     bootTokens: 8100,
     steps: [
       { role: 'user', text: 'Tonight\'s window: add ledger_entries.currency as NOT NULL DEFAULT \'USD\' on the 412M row table, plus an index so the currency filter stops seq-scanning. Nothing may hold an ACCESS EXCLUSIVE lock for more than a second — the checkout writers live on that table all night. Plan it, run it, verify it, and write the rollback into the change ticket.' },
@@ -224,11 +232,13 @@ const SESSIONS = [
   {
     id: 'refactor',
     name: 'monolith split · steady grind',
+    about: 'Splitting a 5,112-line billing monolith behind ports, each step green on its own so you can stop anywhere. Context climbs steadily to ~95k, reads then edits, ending on the steepest part of the decay curve. The typical long, ground-out refactor.',
     bootTokens: 12500,
     steps: [
       { role: 'user', text: 'Split billing/monolith.py into billing/invoice/ and billing/tax/ behind ports. No behaviour change, no big bang — both teams land on main every day, so each step has to be green on its own and I need to be able to stop after any of them and ship. Start with the tax seam because that is where the correctness lives.' },
-      { role: 'assistant', text:
-'A split like this is decided before the first file moves, so the first pass is reading the whole module and looking for the seams that already exist rather than inventing ones. What I am looking for specifically: state that only one side touches, helpers that both sides call, and any place where tax logic reaches into invoice state or the other way round, because those are the edges that have to become ports or the split is cosmetic. Reading it whole rather than grepping around it — a seam guessed from signatures is how you end up with two packages that share a mutable dict.',
+      { role: 'assistant', cot:
+'Before anything moves I want the seams, and there are two ways to get this wrong and both are tempting. The cheap one is to grep what calls what and trust the resulting call graph — but a call graph tells me a helper is used by both sides without ever telling me whether that helper reads shared mutable state, and that is the whole danger, because a split that looks clean from signatures ends as two packages secretly sharing one dict. The safe-feeling one is to start with the smallest function on the theory that a move is a move. Safe, and it tells me nothing about the hard edge. The refund path is the one I actually fear: if tax logic reaches into invoice state, or the other way round, that edge has to become a port and I want to know it before I commit to a shape, not after. So reading the module whole, and the refund seam is what I am checking for in the first pass rather than hoping the call graph volunteers it.',
+              text: 'Reading the whole module first — the seams have to be found, not invented, and the refund edge is the one I am checking for in the first pass.',
         tool: { name: 'Read', args: 'billing/monolith.py' } },
       { role: 'tool', name: 'Read', execMs: 260, simTokens: 40000, text:
 '1\t"""Billing. Everything, in one place, since 2019."""\n…\n212\tTAX_TABLES = {}          # module-level, mutated by load_tax_table()\n288\tdef compute_tax(invoice, jurisdiction, fx):\n331\t    invoice.gross = …          # writes through to the caller\'s invoice\n402\t    rate = TAX_TABLES[jurisdiction][invoice.product_class]\n1180\tdef render_invoice(...)\n1455\tdef recalculate_after_refund(...)\n…\n3\tseams observed: tax tables (pure), invoice rendering (io only), refund replay (touches both)\n5,112 lines · 41 top-level functions · 3 module-level singletons (elided)' },
@@ -259,11 +269,13 @@ const SESSIONS = [
   {
     id: 'doc',
     name: 'api reference · decode-bound',
+    about: 'Writing an API reference for an internal team, the artifact streamed through two Write calls as tool args. Deeply decode-bound: hundreds of tokens per write generated against a near-instant prefill, so the run is dominated by the act of typing the document, not re-reading the prompt.',
     bootTokens: 7200,
     steps: [
       { role: 'user', text: 'Write docs/api/session-lifecycle.md for the 0.9 release. Audience is the three internal teams that build services on the handle, not end users, so it can assume they know what a transport is. It has to cover: the state machine and what is legal in each state, shutdown versus close versus abandon, idempotency, what happens to in-flight work, the error taxonomy and which errors are retryable, and the two things people keep getting wrong in review. Take it from the code and the existing tests, not from memory, and if the code and the old doc disagree, the code wins and you tell me.' },
-      { role: 'assistant', text:
-'Then the code is the source and the tests are the spec, because half of what the old guide asserts was written against 0.7 and quietly rotted. Reading the handle implementation in full, and I want the state transitions and every raise site rather than the docstrings — the docstrings are what I am writing, so quoting them would be circular.',
+      { role: 'assistant', cot:
+'Two sources and they will disagree, and the first thing I have to do is pick which one wins before I read a line, because it decides every sentence of the reference. The old guide is a thesis I cannot wholly trust — it was written against a design that shipped two releases ago and has been quietly contradicted by the code since. The implementation is a fact. So the docstring source almost disqualifies itself, because the docstrings are what I am writing, and seeding the reference from their wording would be a circle: quoting them is trusting a self that does not exist yet. That leaves the code and the tests, and they are not equal evidence. A raise site tells me a transition is illegal; a test tells me why it is illegal and what somebody depended on. When the two quietly disagree, the test is the older, more fought-over document and I trust it. Read the implementation for the state machine, then the tests for the callers\' expectations.',
+              text: 'The code is the source and the tests are the spec, because quoting the docstrings I am about to write would be circular, and the tests encode intent better than the raise sites do. Reading the implementation for the state machine, then the tests for what each state\'s callers are promised.',
         tool: { name: 'Read', args: 'src/agentic/handle.py · src/agentic/errors.py · tests/test_handle_lifecycle.py' } },
       { role: 'tool', name: 'Read', execMs: 340, simTokens: 13500, text:
 '31\tclass State(Enum):\n32\t    NEW, OPEN, DRAINING, CLOSED = "new", "open", "draining", "closed"\n…\n88\t    def submit(self, msg):\n89\t        if self._state is not State.OPEN:\n90\t            raise HandleClosedError(self._state) if self._state is State.CLOSED \\\n91\t                else HandleDrainingError(self._state)\n…\n142\t    def shutdown(self, drain=True):\n143\t        """NEW/OPEN -> DRAINING -> CLOSED. Idempotent; returns the drain future."""\n…\n171\t            raise AbandonedError(...)   # only reachable from abandon()\n…\n540 lines handle.py · 96 lines errors.py · 71 tests (elided)' },
@@ -292,6 +304,7 @@ const SESSIONS = [
   {
     id: 'repro',
     name: 'crash repro · huge boot',
+    about: 'An arm64-only segfault in a PNG decoder, ~1 in 300. A 24k boot prompt (a giant repo map) makes request one re-prefill the whole system prompt cold — more than the next four requests combined. A short incident story over a huge initial context.',
     bootTokens: 24000,
     steps: [
       { role: 'user', text: 'arm64 runner segfaults in the PNG decoder about 1 run in 300 on the image fuzz target. Core is at /cores/python-core.9412. I need a reproduction I can hand to the Rust owner, and if you cannot get one, tell me exactly what you need to get one. Do not weaken the fuzz corpus to make it pass.' },
@@ -329,6 +342,7 @@ const SESSIONS = [
   {
     id: 'audit',
     name: 'concurrency audit · thinking-bound',
+    about: 'A worker that stalls weekly with no crash, no log and no reproducer, so no tool can answer it. Five turns, ~77% of what the engine generates is reasoning that never reaches the transcript. The most decode-heavy split in the set: the decode band runs for tens of seconds while the transcript looks idle.',
     bootTokens: 7400,
     steps: [
       { role: 'user', text: 'A checkout worker stalls once or twice a week, always in us-east, never on a test box, and both are arm64. No crash, no log line, no core — the thread simply stops making progress and the supervisor restarts it. I cannot give you a reproducer and I will not let anything run on that host while the incident clock is up. Read the queue it hands work through and tell me what you would stake the fix on.' },

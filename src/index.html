@@ -31,7 +31,7 @@
 
 <header class="topbar">
   <div class="brand">agentic<em>·</em>sim</div>
-  <select id="session" title="Built-in session corpus"></select>
+  <button id="pickSession" class="picker" title="Choose a built-in session scenario" aria-haspopup="dialog"></button>
   <button id="play" class="primary">▶ run</button>
   <button id="restart" title="Restart (R)">↺</button>
   <select id="speed" title="Playback speed"></select>
@@ -102,6 +102,17 @@
 
   </aside>
 </main>
+
+<div class="backdrop" id="scenarioBackdrop" hidden></div>
+<div class="pickerModal" id="scenarioPicker" role="dialog" aria-modal="true"
+     aria-labelledby="scenarioPickerTitle" tabindex="-1" hidden>
+  <header class="pickHead">
+    <h2 id="scenarioPickerTitle">Choose a session</h2>
+    <span class="pickSub">each measured at your current settings — the ratio is in : out</span>
+    <button id="pickClose" class="primary" title="Close (Esc)">✕ close</button>
+  </header>
+  <div class="pickList" id="scenarioList"></div>
+</div>
 
 <script>
 /* inject:app */

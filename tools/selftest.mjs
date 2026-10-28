@@ -36,7 +36,11 @@ class El {
     this.setPointerCapture = () => {}; this.select = () => {}; this.focus = () => {};
     this.blur = () => { this.blurred = true; }; this.remove = () => {}; this.scrollIntoView = () => {};
   }
-  get textContent() { return this._text; }
+  get textContent() {
+    /* a parent with children concatenates them the way the browser does; a leaf returns the
+       text set on it. This is what lets picker rows read their assembled name+stats+about */
+    return this.children.length ? this.children.map((c) => c.textContent).join('') : this._text;
+  }
   set textContent(v) { this._text = String(v); this.children = []; }
   get className() { return [...this._cls].join(' '); }
   set className(v) { this._cls = new Set(String(v).split(/\s+/).filter(Boolean)); }
@@ -615,9 +619,47 @@ $('#latency').value = '120'; $('#latency').dispatch('input');
 $('#jitter').value = '0'; $('#jitter').dispatch('input');
 $('#prefillRange').dispatch('input', { target: { value: '63' } });
 $('#decodeRange').dispatch('input', { target: { value: '28' } });
-$('#session').value = 'greenfield';
+/* the old `<select id="session">` is gone — replaced by the picker pop-up. Selecting a
+   session happens through the same path a user hits: AS.selectSession is what a click on a
+   picker row calls, and it has to pause playback, rewind, and load the new corpus the way the
+   old change handler did */
+const rowCount = $('#scenarioList').children.length === AS.sessions.length;
+const selectThrough = typeof AS.selectSession === 'function';
+ok('picker lists every scenario', rowCount && selectThrough,
+   AS.sessions.length + '/' + $('#scenarioList').children.length + ' rows · selectSession '
+     + (selectThrough ? 'yes' : 'missing'));
+/* the numbers behind each row are the summary's ratio and total measured at the *current*
+   engine settings, so the pop-up tells you what you would get with these sliders. The helper
+   must measure every scenario and must be live: tweak decode speed and the figure should move. */
+const measureAll = AS.sessions.every((s) => {
+  const r = AS.scenarioStats(s.id);
+  return r && typeof r.total === 'number' && r.total > 0 && /: 1\s*$/.test(r.split);
+});
+const totalBefore = AS.scenarioStats('long-log').total;
+const decodeSaved = AS.config.decode;
+AS.config.decode = Math.min(600, decodeSaved * 4);
+const totalAfter = AS.scenarioStats('long-log').total;
+AS.config.decode = decodeSaved;
+const live = totalAfter !== totalBefore;
+ok('picker stats measure every session at current settings', measureAll && live,
+   'doc=' + AS.scenarioStats('doc').split + ' · audit=' + AS.scenarioStats('audit').split
+     + ' · long-log tracks decode: ' + totalBefore.toFixed(1) + 's -> ' + totalAfter.toFixed(1) + 's');
+/* the pop-up's job is to make the choice informed: each row must carry the session's fuller
+   description plus the split and wall time measured at the current engine settings, and the
+   modal must open and close cleanly without disturbing the timeline */
+AS.openPicker(); pump();
+const firstRow = $('#scenarioList').children[0];
+const rowText = firstRow.textContent;
+const listShown = !$('#scenarioPicker').hidden && !$('#scenarioBackdrop').hidden;
+const hasAbout = AS.sessions.every((s) => s.about && s.about.trim().length > 40);
+const hasStats = /in\s*:\s*out/.test(rowText) && /turns/.test(rowText);
+ok('picker pop-up opens and describes', listShown && hasAbout && hasStats,
+   'open=' + listShown + ' · descriptions=' + hasAbout + ' · stats=' + hasStats
+     + ' → "' + (rowText || '').slice(0, 70) + '"');
+AS.closePicker(); pump();
+ok('picker pop-up closes', $('#scenarioPicker').hidden && $('#scenarioBackdrop').hidden);
+AS.selectSession('greenfield'); pump();
 const beforeSwap = AS.tl.duration;
-$('#session').dispatch('change'); pump();
 ok('scenario change pauses playback', $('#play').textContent.indexOf('pause') === -1,
    'button reads ' + JSON.stringify($('#play').textContent));
 /* and any other session setting stops the clock the moment it changes, not a frame later */

@@ -1214,24 +1214,109 @@ for (const key of ['prefill', 'decode']) {
   });
 }
 
-const sessionSel = $('#session');
-for (const s of SESSIONS) {
-  const o = document.createElement('option');
-  /* the topbar wraps before it shrinks the picker, but a narrow window still clips
-     the longest scenario name, so the full label is in the tooltip */
-  o.value = s.id; o.textContent = s.name; o.title = s.name;
-  sessionSel.appendChild(o);
+/* ------------------------- scenario picker pop-up -------------------------
+   The topbar hosts a button rather than a `<select>`: choosing a session is a decision,
+   not a pick from a list of one-line names, so the button opens a pop-up that shows each
+   scenario's fuller description beside the numbers the summary would report for it — the
+   in:out ratio and the wall time — measured at the current engine settings, so the picker
+   tells you what you would actually get with these sliders, not some reference profile.
+   Measuring walks the corpus through the same buildTimeline the page renders; it is
+   side-effect free (buildTimeline only reads config and the corpus), so it runs fresh each
+   time the pop-up opens and is never cached against a stale profile. */
+function scenarioStats(id) {
+  /* measure the session under the live settings by pointing config at it, then putting the
+     selected session back. The other settings (prefill, decode, cache, curve, latency) stay
+     exactly as the user has them, which is what makes the numbers match the run on screen.
+     buildTimeline does not mutate config.curve (it clones it into params), so this is safe */
+  const saved = config.session;
+  config.session = id;
+  const tl = buildTimeline();
+  config.session = saved;
+  return { split: pfDk(tl.stats.prefillMs, tl.stats.decodeMs), total: tl.duration };
 }
-sessionSel.value = config.session;
-sessionSel.addEventListener('change', () => {
-  config.session = sessionSel.value;
+
+const pickBtn = $('#pickSession');
+const picker = $('#scenarioPicker');
+const listEl = $('#scenarioList');
+const backdrop = $('#scenarioBackdrop');
+
+function selectScenario(id) {
+  config.session = id;
   userScrolled = false;
   /* a new scenario starts parked at zero: rebuild stops the clock and seek(0) rewinds.
      Land at zero before the rebuild so it renders once at the new start, not once at the
      old playhead and again at zero */
   vTime = 0;
   rebuild();
+  updatePickerButton();
+  syncPickerSelection();
+  closePicker();
+}
+
+function buildPicker() {
+  listEl.innerHTML = '';
+  for (const s of SESSIONS) {
+    const ref = scenarioStats(s.id);
+    const row = el('div', 'scenario');
+    row.dataset.id = s.id;
+    row.setAttribute('role', 'option');
+    row.setAttribute('aria-selected', String(s.id === config.session));
+    row.tabIndex = 0;
+    const head = el('div', 'scenarioHead');
+    head.appendChild(el('span', 'sName', s.name));
+    const meta = el('span', 'sMeta',
+      ref.split + ' in : out · ' + fmtDur(ref.total) + ' · ' + s.steps.filter(x => x.role === 'assistant').length + ' turns');
+    head.appendChild(meta);
+    row.appendChild(head);
+    if (s.about) row.appendChild(el('div', 'sAbout', s.about));
+    const act = el('div', 'sAct', s.id === config.session ? 'loaded' : 'load →');
+    row.appendChild(act);
+    row.addEventListener('click', () => selectScenario(s.id));
+    row.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.code === 'Space') { e.preventDefault(); selectScenario(s.id); }
+      else if (e.key === 'ArrowDown') { e.preventDefault(); (row.nextElementSibling || listEl.firstElementChild).focus(); }
+      else if (e.key === 'ArrowUp') { e.preventDefault(); (row.previousElementSibling || listEl.lastElementChild).focus(); }
+    });
+    listEl.appendChild(row);
+  }
+}
+function updatePickerButton() {
+  const s = SESSIONS.find(x => x.id === config.session);
+  pickBtn.textContent = s ? s.name : config.session;
+  pickBtn.title = 'Choose a session · current: ' + (s ? s.name : config.session);
+}
+function syncPickerSelection() {
+  for (const row of listEl.children) {
+    const cur = row.dataset.id === config.session;
+    row.setAttribute('aria-selected', String(cur));
+    row.classList.toggle('current', cur);
+  }
+}
+function openPicker() {
+  /* rebuild on every open so the in:out ratios and totals reflect whatever the sliders
+     and cache/curve settings are right now, not the profile the pop-up last rendered */
+  buildPicker();
+  picker.hidden = false;
+  backdrop.hidden = false;
+  document.documentElement.classList.add('modal-open');
+  const cur = listEl.querySelector('[aria-selected="true"]') || listEl.firstElementChild;
+  (cur || picker).focus();
+}
+function closePicker() {
+  picker.hidden = true;
+  backdrop.hidden = true;
+  document.documentElement.classList.remove('modal-open');
+  pickBtn.focus();
+}
+
+pickBtn.addEventListener('click', () => (picker.hidden ? openPicker() : closePicker()));
+backdrop.addEventListener('click', closePicker);
+$('#pickClose').addEventListener('click', closePicker);
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && !picker.hidden) { e.stopPropagation(); closePicker(); }
 });
+updatePickerButton();
+buildPicker();
 
 const speedSel = $('#speed');
 for (const s of SPEEDS) {
@@ -1349,8 +1434,9 @@ rebuild();
 if (config.autoplay) play(); else { updatePlayBtn(); render(vTime); }
 /* the console and the selftest both want to know where the playhead actually is, as
    opposed to what the clock says after formatting */
-window.AS = { config, sessions: SESSIONS,
+window.AS = { config, sessions: SESSIONS, scenarioStats,
               get tl() { return TL; }, get vTime() { return vTime; },
-              rebuild, seek, play, pause, phaseAt, render, stepPhase };
+              rebuild, seek, play, pause, phaseAt, render, stepPhase, selectSession: selectScenario,
+              openPicker, closePicker };
 
 })();
