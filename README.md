@@ -5,7 +5,7 @@ That is, prefill and decode. The simulator allows configurable prefill and decod
 with a N-point curve to simulate the slowdown that accompanies longer sessions, and a
 request latency option to simulate a system under contention.
 
-Implemented as an all-in-one HTML file, with query parameters allowing a quick linking to
+Ships as an all-in-one HTML file, with query parameters allowing a quick linking to
 a predefined configuration.
 
 Session export and replay is not implemented yet, so this pass ships ten built-in session
@@ -13,9 +13,35 @@ corpuses instead: `greenfield`, `bug-hunt`, `long-log`, `deep-fix`, `sweep`, `on
 `migration`, `refactor`, `doc`, and `repro`. Each is pure data and each exercises a different
 shape of the same model — see [`scenarios.md`](scenarios.md).
 
+## Layout
+
+The page is authored as four files under `src/` and **built** into the single artifact:
+
+| file | holds |
+|---|---|
+| `src/index.html` | markup, plus the pre-paint theme script that has to run in `<head>` |
+| `src/app.css` | the stylesheet |
+| `src/scenarios.js` | the `SESSIONS` corpus — data only |
+| `src/app.js` | the model, the views and the controls |
+
+```sh
+node tools/build.mjs           # write index.html
+node tools/build.mjs --check   # exit 1 if index.html is not what src/ says it should be
+```
+
+**Edit `src/`, not `index.html`.** The artifact is regenerated wholesale, so a hand edit to it
+looks right, works right, and vanishes on the next build — which is why the selftest fails when
+the two drift apart (`index.html is the current build of src/`).
+
+The build joins the sources at marker comments — `/* inject:css */` and `/* inject:app */` in
+`src/index.html`, `/* inject:scenarios */` in `src/app.js` — rather than concatenating whole
+files, so the output is byte-identical to the original single file: `'use strict'` is still the
+first statement of the script and the corpus still sits exactly where it sat.
+
 ## Running
 
-Open `index.html`. No build, no dependencies, no network.
+Open `index.html`. No dependencies, no network, and no build step at read time — building is for
+editing only.
 
 ```sh
 open index.html
@@ -259,12 +285,14 @@ on — which also means the checks restore the URL profile before reading the ma
 describe the page rather than whatever the UI probe tested last. Adding a scenario that does not
 satisfy them fails here rather than in the dropdown.
 
-Two rules keep the harness itself honest. A failing check fails the run: `ok` counts failures and
+Three rules keep the harness itself honest. A failing check fails the run: `ok` counts failures and
 the process exits non-zero, because a harness that prints `FAIL` and exits 0 tells whatever is
-watching exit codes that the build is fine. And the shim memoizes attribute-selector lookups, so a
+watching exit codes that the build is fine. The shim memoizes attribute-selector lookups, so a
 test that re-queries `[data-curve]` gets back the very nodes the page attached
 its listeners to. Before that, a battery dispatching clicks on freshly built buttons drove nothing
-and stayed green — which is how the curve presets went untested while looking tested.
+and stayed green — which is how the curve presets went untested while looking tested. And when the
+file under test is `index.html` itself, the harness rebuilds `src/` in memory and fails if the two
+disagree, so a hand edit to the artifact is caught rather than quietly overwritten later.
 
 ```sh
 node tools/selftest.mjs index.html "?session=long-log&autoplay=0"

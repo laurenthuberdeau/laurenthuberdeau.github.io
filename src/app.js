@@ -1,0 +1,1264 @@
+'use strict';
+/* ============================================================================
+   Agentic Session Simulator
+   Models the two faces of LLM inference: a prefill burst over the whole prompt,
+   then a token-at-a-time decode that slows as session context grows, with an
+   optional queue wait in front of each request, for a system under contention.
+   ========================================================================== */
+
+/* inject:scenarios */
+
+/* ------------------------------- helpers -------------------------------- */
+const $ = (s, r) => (r || document).querySelector(s);
+const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+const TOKEN_RE = /\S+\s*/g;
+const tokenize = (s) => s.match(TOKEN_RE) || [];
+
+function fmtTok(n) {
+  if (!Number.isFinite(n)) return '—';
+  if (n >= 1e6) return (n / 1e6).toFixed(2) + 'M';
+  if (n >= 1e4) return (n / 1e3).toFixed(0) + 'k';
+  if (n >= 1000) return (n / 1e3).toFixed(1) + 'k';
+  return String(Math.round(n));
+}
+/* durations hug their unit — `750ms`, `12.65s`, `2m 27s` — so the compound minute form
+   and the single-unit forms read as one style; `tok` keeps its space because it is a
+   word, not a unit suffix */
+function fmtDur(s) {
+  if (!Number.isFinite(s)) return '—';
+  if (s < 1) return Math.round(s * 1000) + 'ms';
+  if (s < 60) return s.toFixed(2) + 's';
+  const m = Math.floor(s / 60);
+  return m + 'm ' + (s - m * 60).toFixed(0) + 's';
+}
+function mulberry32(a) {
+  return function () {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+/* piecewise-linear decode multiplier over prompt size */
+function curveAt(pts, x) {
+  if (!pts.length) return 100;
+  if (x <= pts[0].ctx) return pts[0].mult;
+  for (let i = 1; i < pts.length; i++) {
+    if (x <= pts[i].ctx) {
+      const a = pts[i - 1], b = pts[i];
+      const f = (x - a.ctx) / Math.max(1, b.ctx - a.ctx);
+      return a.mult + (b.mult - a.mult) * f;
+    }
+  }
+  return pts[pts.length - 1].mult;
+}
+/* effective tok/s for a base speed under the curve at prompt size x. Both
+   phases and every display read this, so the floor and the % math can't
+   disagree between the model and the phase bar. */
+function effRate(base, pts, x) {
+  return Math.max(1, base * curveAt(pts, x) / 100);
+}
+
+/* ------------------------------- config --------------------------------- */
+const CURVES = {
+  flat:   [[0, 100]],
+  gentle: [[0, 100], [64000, 88], [200000, 72]],
+  steep:  [[0, 100], [16000, 82], [64000, 55], [160000, 30], [256000, 18]],
+  cliff:  [[0, 100], [96000, 96], [100000, 38], [256000, 22]]
+};
+const SPEEDS = [0.25, 0.5, 1, 2, 4, 8, 16];
+/* fixed so that a link replays identically, without an option for it */
+const JITTER_SEED = 1337;
+const DEFAULTS = {
+  session: 'long-log', prefill: 1500, decode: 50, latency: 300, jitter: 250,
+  cache: 1,
+  speed: 1, curve: 'steep', autoplay: 1, theme: 'dark'
+};
+
+const Q = new URLSearchParams(location.search);
+const qnum = (k, d) => { const v = parseFloat(Q.get(k)); return Number.isFinite(v) ? v : d; };
+const qstr = (k, d) => (Q.get(k) || d);
+const mkPts = (src) => src.map(([ctx, mult]) => ({ ctx, mult }));
+
+/* single source for the curve multiplier bounds — chart axis, drag, table editor
+   and parser all share it so drawn vs typed values cannot disagree */
+const MULT = { min: 1, max: 150, axis: 120 };
+/* ctx quantisation + minimum spacing shared by drag, table edit and addPoint */
+const CTX_STEP = 1000;
+const normMult = (v) => { const n = parseFloat(v); return clamp(Number.isFinite(n) ? n : MULT.min, MULT.min, MULT.max); };
+const normCtx = (v) => { const n = parseFloat(v); return Math.max(0, Math.round((Number.isFinite(n) ? n : 0) / CTX_STEP) * CTX_STEP); };
+/* quantise and clamp to a quantised [lo, hi], so the returned value is always a
+   clean multiple of CTX_STEP even when the bounds (like the axis edge) aren't */
+const qclampCtx = (raw, lo, hi) => {
+  lo = normCtx(lo); hi = Math.max(normCtx(hi), lo);
+  return clamp(Math.round(raw / CTX_STEP) * CTX_STEP, lo, hi);
+};
+
+function parseCurve(raw, fallback) {
+  if (!raw) return mkPts(fallback);
+  const pts = String(raw).split(',').map((pair) => {
+    const kv = pair.split(':');
+    const ctx = parseFloat(kv[0]), mult = parseFloat(kv[1]);
+    return Number.isFinite(ctx) && Number.isFinite(mult) ? { ctx, mult } : null;
+  }).filter(Boolean).sort((a, b) => a.ctx - b.ctx);
+  /* clamp to the same domain the editor uses, drop coincident points */
+  const out = [];
+  for (const p of pts) {
+    p.ctx = normCtx(p.ctx);
+    p.mult = normMult(p.mult);
+    if (out.length && out[out.length - 1].ctx === p.ctx) continue;
+    out.push(p);
+  }
+  return out.length ? out : mkPts(fallback);
+}
+
+const config = {
+  session:  SESSIONS.some(s => s.id === Q.get('session')) ? Q.get('session') : DEFAULTS.session,
+  prefill:  Math.max(500, qnum('prefill', qnum('p', DEFAULTS.prefill))),
+  decode:   Math.max(1, qnum('decode', qnum('d', DEFAULTS.decode))),
+  latency:  Math.max(0, qnum('latency', qnum('l', DEFAULTS.latency))),
+  jitter:   Math.max(0, qnum('jitter', DEFAULTS.jitter)),
+  cache:     qnum('cache', qnum('c', DEFAULTS.cache)) !== 0,
+  speed:    SPEEDS.includes(qnum('speed', qnum('s', DEFAULTS.speed))) ? qnum('speed', qnum('s', DEFAULTS.speed)) : 1,
+  autoplay: qnum('autoplay', DEFAULTS.autoplay) !== 0,
+  theme:    window.AS_THEME || DEFAULTS.theme,
+  curve:    parseCurve(Q.get('curve'), CURVES[qstr('curve', DEFAULTS.curve)] || CURVES[DEFAULTS.curve])
+};
+
+/* ---------------------------- timeline model ----------------------------
+   Per model turn (one request):
+     queue    scheduler / contention wait
+     prefill  uncached prompt tokens are ingested at prefill tok/s * curve, nothing
+              visible; the cached prefix is reused free
+     decode   tokens arrive at decode tok/s * curve(prompt size so far)
+     tool     the tool runs; its output joins context for the next prefill
+   Both phases read the same curve: a longer prompt costs more per token whether
+   the work is ingesting it or generating against it. */
+let TL = null;
+
+/* prefill is charged in blocks, both because engines chunk it and so the curve
+   can be integrated instead of sampled once at the end */
+const PREFILL_BLOCK = 512;
+
+/* seconds to ingest prompt tokens in [from, to) at the given base prefill speed */
+function prefillSeconds(from, to, pts, base) {
+  let secs = 0;
+  for (let n = from; n < to; ) {
+    const end = Math.min((Math.floor(n / PREFILL_BLOCK) + 1) * PREFILL_BLOCK, to);
+    const rate = effRate(base, pts, (n + end) / 2);
+    secs += (end - n) / rate;
+    n = end;
+  }
+  return secs;
+}
+
+/* small inter-turn gaps (message round-trip feel) that belong to no phase but
+   still elapse; surfaced in the summary so the accounting sums to duration */
+const GAP_USER_MS = 150, GAP_TOOL_MS = 120;
+
+/* The bar under the topbar drawn to scale: TL.items reduced to one band per phase
+   run, edge to edge over [0, duration]. Reads the same latencyStart / prefillStart
+   / decodeStart / end fields phaseAt reads, so the coloured bands and the phase bar
+   cannot disagree about where a phase is. Time that belongs to no phase — the
+   inter-turn gaps, and anything before the first event — is its own 'gap' band so
+   the bands always sum to the duration the clock shows. Zero-length runs (no queue
+   wait, an empty completion) drop out rather than steal a pixel from their
+   neighbours. */
+function phaseSegments(items, duration) {
+  const segs = [];
+  const push = (phase, from, to, extra) => {
+    if (to - from <= 1e-9) return;
+    segs.push(Object.assign({ phase, from, to }, extra || {}));
+  };
+  let t = 0;
+  for (const item of items) {
+    if (item.kind === 'assistant') {
+      const q = item.req;
+      push('gap', t, item.latencyStart);
+      push('queue', item.latencyStart, item.prefillStart, { req: q.no });
+      push('prefill', item.prefillStart, item.decodeStart, { req: q.no });
+      push('decode', item.decodeStart, item.end, { req: q.no });
+      t = item.end;
+    } else if (item.kind === 'tool') {
+      push('gap', t, item.from);
+      push('tool', item.from, item.at, { name: item.name });
+      t = item.at;
+    } else {
+      push('gap', t, item.at);
+      t = item.at;
+    }
+  }
+  push('gap', t, duration);
+  return segs;
+}
+
+function buildTimeline() {
+  const session = SESSIONS.find(s => s.id === config.session) || SESSIONS[0];
+  const pts = config.curve;
+  /* the parameter vector this timeline was built from. Every downstream read
+     (phase bar, ledger, summary, boot banner) goes through TL.params, so a deferred
+     rebuild (rAF-coalesced during drags/typing) can never render live settings
+     against an older timeline. The curve is copied: the editor mutates
+     config.curve in place. */
+  const params = {
+    session: session.id, bootTokens: session.bootTokens,
+    prefill: config.prefill, decode: config.decode,
+    latency: config.latency, jitter: config.jitter, cache: config.cache,
+    curve: pts.map(p => ({ ctx: p.ctx, mult: p.mult }))
+  };
+  const rnd = mulberry32(JITTER_SEED);
+  const items = [], reqs = [];
+  let ctx = session.bootTokens || 0, t = 0, n = 0, peak = ctx;
+  let userGapMs = 0, toolGapMs = 0, lastCompact = null;
+  /* tokens added since the previous request: only these are prefillable, the
+     prefix before them is already in the KV cache and costs nothing to reuse,
+     which is the local-inference case where the cache is not shared */
+  let fresh = session.bootTokens || 0;
+  if (ctx) items.push({ kind: 'system', at: 0, tokens: ctx });
+
+  for (const step of session.steps) {
+    if (step.role === 'user') {
+      const tokens = tokenize(step.text);
+      items.push({ kind: 'user', text: step.text, at: t, tokens: tokens.length });
+      ctx += tokens.length;
+      if (ctx > peak) peak = ctx;
+      fresh += tokens.length;
+      t += GAP_USER_MS / 1000; userGapMs += GAP_USER_MS;
+
+    } else if (step.role === 'assistant') {
+      const latencyStart = t;
+      const wait = Math.max(0, (config.latency + (config.jitter ? (rnd() * 2 - 1) * config.jitter : 0)) / 1000);
+      const prefillStart = latencyStart + wait;
+      const cached = config.cache ? clamp(ctx - fresh, 0, ctx) : 0;
+      const cold = ctx - cached;
+      const prefillDur = prefillSeconds(cached, ctx, pts, config.prefill);
+      const decodeStart = prefillStart + prefillDur;
+
+      /* output = prose plus an optional streamed tool call, one token stream */
+      const segments = [{ kind: 'text', tokens: tokenize(step.text), from: 0 }];
+      if (step.tool) {
+        segments.push({ kind: 'tool', name: step.tool.name, args: step.tool.args,
+                        tokens: tokenize(step.tool.args), from: segments[0].tokens.length });
+      }
+      const all = [];
+      for (const s of segments) for (const tk of s.tokens) all.push(tk);
+
+      const times = [];
+      let acc = decodeStart, gen = 0, secs = 0;
+      for (let i = 0; i < all.length; i++) {
+        const rate = effRate(config.decode, pts, ctx + gen);
+        const dt = 1 / rate;
+        secs += dt; acc += dt; gen++;
+        times.push(acc);
+      }
+      const end = all.length ? acc : decodeStart;
+      const req = {
+        no: ++n, ctx, out: all.length, cached, cold,
+        queueMs: wait * 1000, prefillMs: prefillDur * 1000,
+        cacheSaveMs: prefillSeconds(0, cached, pts, config.prefill) * 1000,
+        avgDecode: secs > 0 ? all.length / secs : 0,
+        start: latencyStart, decodeStart, end,
+        ...(lastCompact != null ? { afterCompact: lastCompact } : {})
+      };
+      lastCompact = null;
+      fresh = 0;
+      reqs.push(req);
+      items.push({ kind: 'assistant', req, segments, tokens: all, times,
+                   latencyStart, prefillStart, decodeStart, end, shown: -1 });
+      ctx += all.length;
+      if (ctx > peak) peak = ctx;
+      t = end;
+
+    } else if (step.role === 'compact') {
+      /* a coding-harness history compaction: the detailed history is replaced by
+         a summary, so ctx shrinks and the prefix cache keeps only boot —
+         everything the engine had ingested past boot is new text again */
+      const tokens = tokenize(step.text).length + (step.simTokens || 0);
+      const from = t, before = ctx, boot = session.bootTokens || 0;
+      t += Math.max(0, (step.execMs ?? 3000) / 1000);
+      items.push({ kind: 'tool', compact: true, name: 'compaction', text: step.text,
+                   at: t, from, before, after: boot + tokens, boot, tokens,
+                   simTokens: step.simTokens || 0 });
+      ctx = boot + tokens;
+      fresh = tokens;
+      lastCompact = tokens;
+      t += GAP_TOOL_MS / 1000; toolGapMs += GAP_TOOL_MS;
+
+    } else {
+      const tokens = tokenize(step.text).length + (step.simTokens || 0);
+      const from = t;
+      t += Math.max(0, (step.execMs || 100) / 1000);
+      items.push({ kind: 'tool', name: step.name, text: step.text, at: t, from,
+                   tokens, simTokens: step.simTokens || 0 });
+      ctx += tokens;
+      if (ctx > peak) peak = ctx;
+      fresh += tokens;
+      t += GAP_TOOL_MS / 1000; toolGapMs += GAP_TOOL_MS;
+    }
+  }
+
+  const sum = (f) => reqs.reduce((a, r) => a + f(r), 0);
+  let toolMs = 0;
+  for (const i of items) if (i.kind === 'tool') toolMs += (i.at - i.from) * 1000;
+  const stats = {
+    requests: reqs.length, outTokens: sum(r => r.out),
+    queueMs: sum(r => r.queueMs), prefillMs: sum(r => r.prefillMs),
+    decodeMs: sum(r => r.end - r.decodeStart) * 1000, toolMs, peakCtx: peak,
+    coldTokens: sum(r => r.cold), cachedTokens: sum(r => r.cached),
+    cacheSaveMs: sum(r => r.cacheSaveMs), gapMs: userGapMs + toolGapMs,
+    compactions: items.filter(i => i.compact).length
+  };
+  /* the same run on a flat (mult=100) curve, kept in the model as the control the
+     selftest measures the decay against: queue/tool/gaps are unchanged and the rate
+     is constant, so prefill and decode collapse to plain divisions — no second timeline */
+  const flatDuration = (stats.queueMs + stats.toolMs + stats.gapMs) / 1000
+                     + stats.coldTokens / config.prefill
+                     + stats.outTokens / config.decode;
+  const duration = Math.max(t, 0.001);
+  return {
+    session, items, reqs, ctx, duration, flatDuration, params,
+    segments: phaseSegments(items, duration),
+    stats
+  };
+}
+
+/* --------------------------- corpus character ---------------------------
+   "prefill-heavy" is only a property of the data once the engine speeds are
+   fixed, so every corpus is characterised against the DEFAULTS profile rather
+   than against wherever the sliders happen to be. The phase split of that
+   reference run is measured here rather than declared in the corpus, so it cannot
+   go stale when a scenario is edited; the summary quotes it alongside the split of
+   the run you are actually watching. */
+function profileStats(session) {
+  const keep = {};
+  for (const k of ['session', 'prefill', 'decode', 'latency', 'jitter', 'cache', 'curve']) keep[k] = config[k];
+  config.session = session.id;
+  config.prefill = DEFAULTS.prefill; config.decode = DEFAULTS.decode;
+  config.latency = DEFAULTS.latency; config.jitter = DEFAULTS.jitter;
+  config.cache = DEFAULTS.cache;
+  config.curve = mkPts(CURVES[DEFAULTS.curve]);
+  try { return buildTimeline().stats; } finally { Object.assign(config, keep); }
+}
+/* phase split as a ratio against decode, with enough precision to stay useful
+   when one phase is an order of magnitude smaller than the other */
+function pfDk(prefillMs, decodeMs) {
+  const r = prefillMs / Math.max(1e-9, decodeMs);
+  return (r >= 10 ? r.toFixed(0) : r >= 1 ? r.toFixed(1) : r.toFixed(2)) + ':1';
+}
+for (const s of SESSIONS) {
+  const st = profileStats(s);
+  s.split = pfDk(st.prefillMs, st.decodeMs);
+}
+
+/* ------------------------------ DOM build ------------------------------- */
+const transcript = $('#transcript');
+const PHASE_BAR = $('#phase'), PHASE_K = $('#phase .k'), PHASE_V = $('#phase .v'), PHASE_F = $('#phase .fill'),
+      PHASE_NEXT = $('#phase .next');
+
+function el(tag, cls, txt) {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (txt != null) e.textContent = txt;
+  return e;
+}
+
+function renderDOM() {
+  transcript.textContent = '';
+  for (const item of TL.items) {
+    if (item.kind === 'user' || item.kind === 'system') {
+      const m = el('div', 'msg ' + item.kind);
+      const tag = el('div', 'tag');
+      tag.appendChild(el('span', null, item.kind === 'user' ? 'user' : 'session boot'));
+      if (item.kind === 'system') tag.appendChild(el('span', 'rt', fmtTok(item.tokens) + ' prompt tokens' +
+        (TL.params.cache ? ', cached across turns' : ', re-sent on every request')));
+      m.appendChild(tag);
+      m.appendChild(el('div', 'body', item.kind === 'user'
+        ? item.text
+        : 'system prompt · tool schemas · repo map'));
+      item.el = m;
+
+    } else if (item.kind === 'assistant') {
+      const m = el('div', 'msg assistant');
+      const tag = el('div', 'tag');
+      tag.appendChild(el('span', null, 'assistant'));
+      item.rtEl = el('span', 'rt');
+      tag.appendChild(item.rtEl);
+      m.appendChild(tag);
+      item.segs = item.segments.map((s) => {
+        let box, tokHost;
+        if (s.kind === 'text') {
+          box = el('div', 'body');
+          tokHost = box;
+        } else {
+          box = el('div', 'toolcall');
+          /* framed and labelled, so it has to start hidden the way the cursor does: the
+             message is built before the request is even queued, and a call box standing
+             there empty would promise a call nobody has made yet */
+          box.style.display = 'none';
+          const bt = el('div', 'tag');
+          bt.appendChild(el('span', null, 'tool call'));
+          bt.appendChild(el('span', 'rt', s.name));
+          box.appendChild(bt);
+          tokHost = el('div', 'args');
+          box.appendChild(tokHost);
+        }
+        const tokEl = el('span', 'tok');
+        const cursorEl = el('span', 'cursor');
+        cursorEl.style.display = 'none';
+        tokHost.appendChild(tokEl);
+        tokHost.appendChild(cursorEl);
+        m.appendChild(box);
+        return { seg: s, node: box, tokEl, cursorEl, last: -1 };
+      });
+      item.el = m;
+
+    } else if (item.compact) {
+      const m = el('div', 'msg tool');
+      const tag = el('div', 'tag');
+      tag.appendChild(el('span', null, 'harness'));
+      tag.appendChild(el('span', 'rt', 'context compacted · ' + fmtTok(item.before) + ' → ' +
+        fmtTok(item.tokens) + ' tok summary · ' +
+        (TL.params.cache
+          ? 'only ' + fmtTok(item.boot) + ' boot cached · next request re-prefills ' + fmtTok(item.tokens) + ' cold'
+          : 'next request re-prefills ' + fmtTok(item.after) + ' cold')));
+      m.appendChild(tag);
+      const o = el('div', 'toolout' + (item.simTokens ? ' elided' : ''));
+      o.appendChild(el('span', null, item.text));
+      if (item.simTokens) {
+        o.appendChild(document.createElement('br'));
+        o.appendChild(el('span', 'toks', '… ' + fmtTok(item.simTokens) +
+          ' tokens elided from this preview, still counted in context'));
+      }
+      m.appendChild(o);
+      item.el = m;
+
+    } else {
+      const m = el('div', 'msg tool');
+      const tag = el('div', 'tag');
+      tag.appendChild(el('span', null, 'result'));
+      tag.appendChild(el('span', 'rt', item.name + ' · ' + fmtDur(item.at - item.from) +
+                                    ' · +' + fmtTok(item.tokens) + ' tok in'));
+      m.appendChild(tag);
+      const o = el('div', 'toolout' + (item.simTokens ? ' elided' : ''));
+      o.appendChild(el('span', null, item.text));
+      if (item.simTokens) {
+        o.appendChild(document.createElement('br'));
+        o.appendChild(el('span', 'toks', '… ' + fmtTok(item.simTokens) +
+          ' tokens elided from this preview, still counted in context'));
+      }
+      m.appendChild(o);
+      item.el = m;
+    }
+    transcript.appendChild(item.el);
+  }
+  buildLedger();
+}
+
+function buildLedger() {
+  const tbl = $('#ledger');
+  tbl.textContent = '';
+  const head = document.createElement('tr');
+  ['#', 'ctx in', 'prefilled', 'queue', 'prefill', 'decode', 'out'].forEach(h => head.appendChild(el('th', null, h)));
+  tbl.appendChild(head);
+  for (const r of TL.reqs) {
+    const tr = document.createElement('tr');
+    tr.className = 'pending' + (r.afterCompact ? ' post-compact' : '');
+    [(r.afterCompact ? '↻ ' : '') + String(r.no), fmtTok(r.ctx), '', '', '', '', '']
+      .forEach(v => tr.appendChild(el('td', 'n', v)));
+    tbl.appendChild(tr);
+    r.row = tr;
+  }
+}
+
+/* ------------------------------- rendering ------------------------------ */
+let vTime = 0, playing = false, anchorWall = 0, anchorV = 0, raf = 0, userScrolled = false;
+/* followTop remembers where follow() itself put the pane, because the browser delivers
+   that scroll as an event like any other and the pane must not read its own motion as a
+   reader taking over */
+let followTop = null;
+
+/* One rectangle for the whole run: it takes the phase's name, its colour (through
+   --c, via the data-phase attribute) and its own progress, so there is no idle chip
+   to reset and nothing to dim back to — the bar always says what is happening now. */
+function setPhase(phase, text, frac) {
+  PHASE_BAR.dataset.phase = phase;
+  PHASE_K.textContent = PHASE_NAME[phase] || phase;
+  PHASE_V.textContent = text;
+  PHASE_F.style.width = (clamp(frac || 0, 0, 1) * 100).toFixed(1) + '%';
+}
+
+/* band titles carry the phase and its own duration, so hovering the bar reads as
+   a legend for the run rather than a strip of decorative colour */
+const PHASE_NAME = { queue: 'queue', prefill: 'prefill', decode: 'decode', tool: 'tool exec',
+                     gap: 'turn gap', idle: 'idle', done: 'run complete' };
+
+/* Both strips hold the whole timeline and only differ by the clip, so the bands
+   are laid out once per rebuild and a frame costs one style write. */
+function renderSeekTrack() {
+  const track = $('#seek .track'), played = $('#seek .played');
+  track.textContent = ''; played.textContent = '';
+  for (const s of TL.segments) {
+    const span = s.to - s.from;
+    const title = (PHASE_NAME[s.phase] || s.phase) +
+      (s.req ? ' #' + s.req : '') + (s.name ? ' · ' + s.name : '') + ' · ' + fmtDur(span);
+    for (const strip of [track, played]) {
+      const b = el('div', 'seg');
+      b.dataset.phase = s.phase;
+      /* grow by seconds against the bar width, so bands stay proportional without
+         accumulating rounding drift the way a list of percentages would */
+      b.style.flex = span.toFixed(5) + ' 1 0';
+      b.title = title;
+      strip.appendChild(b);
+    }
+  }
+}
+
+function phaseAt(t) {
+  for (const item of TL.items) {
+    if (item.kind === 'assistant') {
+      if (t < item.latencyStart) return null;
+      if (t < item.decodeStart) {
+        if (t < item.prefillStart) {
+          const d = item.prefillStart - item.latencyStart;
+          return { phase: 'queue', frac: d > 0 ? (t - item.latencyStart) / d : 1, item };
+        }
+        const d = item.decodeStart - item.prefillStart;
+        return { phase: 'prefill', frac: d > 0 ? (t - item.prefillStart) / d : 1, item };
+      }
+      /* the end is exclusive: a band boundary belongs to the phase that starts there,
+         which is what the colour under the playhead already says, so the bar, the head
+         and the band agree instead of the bar naming the phase that just finished */
+      if (t < item.end) {
+        const d = item.end - item.decodeStart;
+        return { phase: 'decode', frac: d > 0 ? (t - item.decodeStart) / d : 1, item };
+      }
+    } else if (item.kind === 'tool') {
+      if (t < item.from) return null;
+      if (t < item.at) return { phase: 'tool', frac: (t - item.from) / Math.max(1e-9, item.at - item.from), item };
+    }
+  }
+  return null;
+}
+
+function countTokens(times, t) {
+  let lo = 0, hi = times.length;
+  while (lo < hi) { const mid = (lo + hi) >> 1; if (times[mid] <= t) lo = mid + 1; else hi = mid; }
+  return lo;
+}
+
+/* scroll the active block into view. What "in view" means depends on how the block
+   arrives: a tool result or the next user message lands all at once, so its beginning is
+   what you want, while an assistant message grows token by token and should keep showing
+   its newest line. */
+function follow(item) {
+  const el = item && item.el;
+  if (!el) return;
+  /* a hidden pane has nothing to scroll: on a narrow window the panel replaces the
+     transcript, and writing to it every frame would be layout work for no pixels */
+  if (!transcript.clientHeight) return;
+  const c = transcript.getBoundingClientRect(), b = el.getBoundingClientRect();
+  /* a pane with no height is not on screen — on a narrow window the panel replaces it — and
+     there is nothing to scroll, so do not write to it every frame */
+  if (c.bottom <= c.top) return;
+  /* aim a little inside the pane rather than at its edge, so a line never sits flush
+     against the border, where the pane's own padding would clip half of it */
+  if (item.kind === 'assistant') {
+    /* terminal rule: keep the live line on screen; if the playhead jumped back above this
+       block, come back down to it */
+    if (b.bottom > c.bottom - 12 || b.bottom < c.top) scrollBy(b.bottom - (c.bottom - 12));
+  } else if (Math.abs(b.top - (c.top + 10)) > 2) {
+    /* a block that arrives whole is read from its first line, even when a few lines of it
+       are already peeking in at the bottom of the pane — one visible line of a long tool
+       result is not a place to start reading */
+    scrollBy(b.top - (c.top + 10));
+  }
+}
+
+/* one clamped write: scrollTop has no clamping of its own mid-layout, and a negative write
+   would fight the browser */
+function scrollBy(delta) {
+  if (!delta) return;
+  const top = Number(transcript.scrollTop);
+  const max = Math.max(0, (Number(transcript.scrollHeight) || 0) - (Number(transcript.clientHeight) || 0));
+  followTop = clamp((Number.isFinite(top) ? top : 0) + delta, 0, max);
+  transcript.scrollTop = followTop;
+}
+
+function render(t) {
+  const P = TL.params;
+  const itemForReq = {};
+  /* clear a partially-streamed message when the playhead moves back before its
+     prefill started; otherwise seeking backward leaves already-emitted text in
+     the body next to a "queued" tag (the streaming branch never runs again) */
+  const resetStream = (item) => {
+    item.shown = -1;
+    for (const s of item.segs) {
+      if (s.last !== 0) { s.last = 0; s.tokEl.textContent = ''; }
+      s.cursorEl.style.display = 'none';
+      /* the framed call box goes back with its tokens, so rewinding a run does not leave
+         a framed box standing over an empty argument list */
+      if (s.seg.kind === 'tool') s.node.style.display = 'none';
+    }
+  };
+  for (const item of TL.items) {
+    if (item.kind === 'assistant') {
+      itemForReq[item.req.no] = item;
+      const queued = t >= item.latencyStart;
+      const prefilling = t >= item.prefillStart;
+      const done = t >= item.end;
+      item.el.classList.toggle('shown', queued);
+      if (prefilling) {
+        const n = countTokens(item.times, t);
+        if (item.shown !== n) {
+          item.shown = n;
+          for (const s of item.segs) {
+            const from = s.seg.from, len = s.seg.tokens.length;
+            const k = clamp(n - from, 0, len);
+            if (s.last !== k) { s.last = k; s.tokEl.textContent = s.seg.tokens.slice(0, k).join(''); }
+            const mine = n > from && n < from + len;
+            const lastSeg = s === item.segs[item.segs.length - 1];
+            s.cursorEl.style.display = (mine || (!done && n >= from + len && lastSeg)) ? '' : 'none';
+            /* a call does not exist until the model starts emitting it. The box is framed
+               and labelled, so showing it from the start would announce, through queue,
+               prefill and the prose half of decode, a tool call that has not been made —
+               the one thing the stream is not supposed to give away early. A call with no
+               argument tokens has nothing to stream, so it appears when the stream reaches
+               the position it occupies rather than waiting on a token that never comes. */
+            if (s.seg.kind === 'tool') {
+              const begun = len > 0 ? n > from : n >= from && n > 0;
+              s.node.style.display = begun ? '' : 'none';
+            }
+          }
+        }
+        const q = item.req;
+        item.rtEl.textContent = done
+          ? 'ctx ' + fmtTok(q.ctx) + ' → ' + q.out + ' tok out @ ' + q.avgDecode.toFixed(0) + ' tok/s'
+          : (t < item.decodeStart ? 'prefilling ' + fmtTok(q.cold) + ' new tokens' +
+              (q.cached ? ', ' + fmtTok(q.cached) + ' reused' : '') + '…'
+                                  : 'decoding ' + n + '/' + q.out);
+      } else if (queued) {
+        /* seeked back before this message's prefill: drop any previously
+           streamed tokens so the body matches the "queued" state */
+        if (item.shown >= 0) resetStream(item);
+        item.rtEl.textContent = 'queued · waiting for a slot on the engine';
+      } else if (item.shown >= 0) {
+        /* before the request starts at all */
+        resetStream(item);
+      }
+      item.el.classList.toggle('streaming', t >= item.decodeStart && !done);
+    } else {
+      item.el.classList.toggle('shown', t >= item.at - 1e-9);
+    }
+  }
+
+  /* both ends of the run are states of it rather than phases inside it: at zero nothing
+     has been asked yet, at the far end the last token is already out — and phaseAt
+     reports decode at exactly that instant, which would read as if it were still running */
+  const p = t <= 1e-9 || t >= TL.duration - 1e-9 ? null : phaseAt(t);
+  if (!p) {
+    /* phaseAt is null both between phases and outside the run, so the band list says
+       which: a gap band is harness round-trip time, anything else is before or after */
+    const g = t >= TL.duration - 1e-9 || t <= 1e-9 ? null
+      : TL.segments.find((s) => s.phase === 'gap' && t >= s.from && t < s.to);
+    if (g) setPhase('gap', fmtDur(g.to - g.from) + ' round trip · no inference, no tool running',
+                    (t - g.from) / Math.max(1e-9, g.to - g.from));
+    else if (t >= TL.duration - 1e-9) setPhase('done', TL.stats.requests + ' requests · ' +
+      fmtTok(TL.stats.outTokens) + ' tok out · ' + fmtDur(TL.duration) + ' total', 1);
+    else setPhase('idle', TL.stats.requests + ' requests · ' + fmtDur(TL.duration) + ' · press run', 0);
+  } else if (p.phase === 'queue') {
+    const q = p.item.req;
+    setPhase('queue', 'req #' + q.no + ' · ' + fmtDur(q.queueMs / 1000) + ' wait · ' +
+            fmtDur(q.prefillMs / 1000) + ' prefill next', p.frac);
+  } else if (p.phase === 'prefill') {
+    const q = p.item.req;
+    const eff = effRate(P.prefill, P.curve, q.cached + q.cold * p.frac);
+    setPhase('prefill', 'req #' + q.no + ' · ' + fmtTok(q.cold * p.frac) + ' / ' + fmtTok(q.cold) +
+            ' tok ingested · ' + (q.cached ? fmtTok(q.cached) + ' reused' : 'cold') +
+            ' @ ' + fmtTok(eff) + ' tok/s', p.frac);
+  } else if (p.phase === 'decode') {
+    const q = p.item.req, n = countTokens(p.item.times, t);
+    /* at the first instant of decode there is no measured rate yet, and reporting 0
+       tok/s would read as a stall rather than a start */
+    const cap = effRate(P.decode, P.curve, q.ctx + n);
+    const inst = n > 0 ? n / Math.max(1e-9, t - p.item.decodeStart) : cap;
+    setPhase('decode', 'req #' + q.no + ' · ' + n + '/' + q.out + ' tok · ' + inst.toFixed(0) +
+            ' tok/s (cap ' + cap.toFixed(0) + ')', p.frac);
+  } else {
+    setPhase('tool', p.item.name + ' · ' + fmtDur(p.item.at - p.item.from), p.frac);
+  }
+  /* the hint is the control's label: it names where a click lands, and stepPhase reads
+     the same boundary, so the two cannot disagree about where the next phase starts */
+  const nb = TL.segments.find((s) => s.from > t + 1e-6);
+  PHASE_NEXT.textContent = nb ? '→ ' + PHASE_NAME[nb.phase] + ' · ' + fmtDur(nb.to - nb.from)
+                              : '→ end of run';
+
+  for (const r of TL.reqs) {
+    const item = itemForReq[r.no];
+    const td = r.row.children;
+    r.row.className = (r.afterCompact ? 'post-compact ' : '') + (t >= r.end ? '' : (t >= r.start ? 'live' : 'pending'));
+    td[2].textContent = t >= r.start
+      ? (r.afterCompact
+        ? 're-prefill · ' + fmtTok(r.cold) + (TL.params.cache ? ' (cache invalidated)' : '')
+        : fmtTok(r.cold) + (r.cached ? ' of ' + fmtTok(r.ctx) : ''))
+      : '';
+    td[3].textContent = t >= r.start ? fmtDur(r.queueMs / 1000) : '';
+    td[4].textContent = t >= r.start + r.queueMs / 1000 ? fmtDur(r.prefillMs / 1000) : '';
+    if (t >= r.decodeStart) {
+      /* show the request's own measured decode rate; the elapsed-time division
+         would decay to 0 as later steps proceed and spike at decode start */
+      td[5].textContent = r.avgDecode.toFixed(0) + ' t/s';
+      const n = Math.max(1, countTokens(item.times, t));
+      td[6].textContent = n + '/' + r.out;
+    } else { td[5].textContent = ''; td[6].textContent = ''; }
+  }
+
+  const frac = clamp(t / TL.duration, 0, 1);
+  $('#tcur').textContent = fmtDur(t);
+  /* reveal the timeline to the left of the playhead rather than growing a bar,
+     so the colour under the head is always the phase the head is inside */
+  $('#seek .played').style.clipPath = 'inset(0 ' + ((1 - frac) * 100).toFixed(3) + '% 0 0)';
+  $('#seek .head').style.left = 'calc(' + (frac * 100) + '% - 1px)';
+  $('#seek').dataset.phase = p ? p.phase : '';
+
+  /* keep the phase you are watching on screen, which means different things depending on
+     how the block arrives: a tool result or the next user message lands all at once, so
+     its beginning is what you want to see, while an assistant message grows token by token
+     and should keep showing its newest line. Scrolling up disengages this, returning to
+     the bottom re-engages it, and any explicit navigation does too — see seek(). */
+  if (!userScrolled) follow(p ? p.item : null);
+}
+
+function loop() {
+  cancelAnimationFrame(raf);
+  if (playing) {
+    vTime = anchorV + ((performance.now() - anchorWall) / 1000) * config.speed;
+    if (vTime >= TL.duration) { vTime = TL.duration; playing = false; updatePlayBtn(); }
+  }
+  render(vTime);
+  if (playing) raf = requestAnimationFrame(loop);
+}
+
+/* ------------------------------ transport ------------------------------- */
+function updatePlayBtn() {
+  $('#play').textContent = playing ? '❚❚ pause'
+    : (vTime >= TL.duration - 1e-6 ? '↻ run' : (vTime > 0 ? '▶ resume' : '▶ run'));
+}
+function play() {
+  if (vTime >= TL.duration - 1e-6) { vTime = 0; userScrolled = false; }
+  playing = true; anchorWall = performance.now(); anchorV = vTime;
+  updatePlayBtn(); loop();
+}
+function pause() { playing = false; cancelAnimationFrame(raf); updatePlayBtn(); render(vTime); }
+function togglePlay() { if (playing) pause(); else play(); }
+function seek(t) {
+  vTime = clamp(t, 0, TL.duration);
+  if (playing) { anchorWall = performance.now(); anchorV = vTime; }
+  /* moving the playhead on purpose means you want to see where it landed, so explicit
+     navigation takes the transcript back over from a reader who scrolled elsewhere */
+  userScrolled = false;
+  updatePlayBtn(); render(vTime);
+}
+
+let rebuildQueued = 0;
+function scheduleRebuild() {
+  if (rebuildQueued) return;
+  rebuildQueued = requestAnimationFrame(() => { rebuildQueued = 0; rebuild(); });
+}
+function rebuild() {
+  const keep = vTime;
+  cancelAnimationFrame(raf);
+  playing = false;
+  TL = buildTimeline();
+  renderDOM();
+  renderSeekTrack();
+  drawCurve();
+  vTime = clamp(keep, 0, TL.duration);
+  render(vTime);
+  updatePlayBtn();
+  updateSummary();
+  updateShare();
+}
+
+/* the reference split the summary quotes is measured at the default profile, which runs
+   with the cache on — see atDefaultProfile below, which counts the toggle */
+function atDefaultProfile() {
+  const p = TL.params;
+  return p.prefill === DEFAULTS.prefill && p.decode === DEFAULTS.decode
+      && !!p.cache === !!DEFAULTS.cache && p.latency === DEFAULTS.latency
+      && p.jitter === DEFAULTS.jitter
+      && JSON.stringify(p.curve) === JSON.stringify(mkPts(CURVES[DEFAULTS.curve]));
+}
+
+function updateSummary() {
+  const s = TL.stats;
+  /* lead with where the wall time went, then the two faces of inference and their
+     split, then the detail; the card is the top of the panel so the order is read.
+     Every row carries a hover note, because the panel is the only place these
+     definitions are written down and the numbers are not self-explanatory. */
+  const TIPS = {
+    total: 'Wall time of the run: queue + prefill + decode + tool exec + turn gaps.',
+    split: 'Ratio between prefill and decode time. 1:1 means one second of prompt processing '
+         + 'for every second of decoding.',
+    prefill: 'Prompt tokens the engine had to process, and the total time it took, at prefill '
+           + 'tok/s × the decay curve. ' + (TL.params.cache
+             ? 'Prompt tokens that are already cached are not included in this count.'
+             : 'Repeated prompt tokens are re-read and re-processed on every turn.'),
+    decode: 'Time spent generating, one token at a time at decode tok/s × the curve.'
+          + (TL.params.cache
+            ? ' Once generated, tokens are cached and the model is never charged for re-reading them.'
+            : ''),
+    tool: 'Time spent in the harness executing tools. Does not involve the engine, but is part '
+        + 'of the total wall time.',
+    queue: 'Per-request scheduler wait: latency ± jitter, drawn from a fixed seed so a shared '
+         + 'link replays identically. Paid once per request, before prefill.',
+    gaps: 'Round trips between turns that belong to no phase: 150 ms before a user message, '
+        + '120 ms after a tool result. They are the reason the four phases alone do not add up '
+          + 'to the clock; with the gaps the sum is exact.',
+    requests: 'Number of steps taken by the harness. Each step is one prefill followed by one '
+            + 'decode, and may include a tool call. The harness pays queue, prefill and decode '
+              + 'in that order; a tool call is part of the request that made it.',
+    peak: 'The largest prompt of the session, reached before the harness compacted the history '
+        + 'away. Context only ever shrinks at a compaction.',
+    compactions: 'When the context is too large for the engine to handle, the harness compacts '
+               + 'it by rewriting the history into a smaller form. The next request re-prefills '
+                 + 'the context at full cost as compaction invalidated the cache.',
+    final: 'Context size at the end of the session.',
+    avgPrefill: 'Average prefill speed over the course of the session.',
+    avgDecode: 'Average decode speed over the course of the session.',
+    saved: 'Number of prefilled tokens read from the cache.'
+  };
+  /* quote the corpus number only while the run is in the regime it was measured in: off the
+     default profile inside that regime the comparison is worth making, and with the cache off it
+     is worse than useless, because it would set a cached-prefix run's ratio against a run that
+     re-reads every prompt whole. Same two words, two different engines. */
+  const refSplit = !!TL.params.cache && !atDefaultProfile();
+  const splitTip = TIPS.split +
+    (refSplit ? ' This scenario at the default profile: ' + TL.session.split + '.' : '');
+  /* the saving reads best where the cost was just stated: directly under prefill, so it
+     answers the row above it, and above decode, which takes the reader off the prompt.
+     With the cache off there is nothing saved to report — the row would read
+     "0 ms (0%)" forever, so it belongs to the cache, not to the run */
+  const saved = TL.params.cache
+    ? ['prefill (cached)', fmtTok(s.cachedTokens) + ' tok (' + fmtDur(s.cacheSaveMs / 1000) + ')', 0, TIPS.saved]
+    : null;
+  const rows = [
+    ['total', fmtDur(TL.duration), 1, TIPS.total],
+    ['prefill : decode', pfDk(s.prefillMs, s.decodeMs) +
+      (refSplit ? '   (corpus at defaults ' + TL.session.split + ')' : ''), 1, splitTip],
+    ['prefill', fmtTok(s.coldTokens) + ' tok (' + fmtDur(s.prefillMs / 1000) + ')', 0, TIPS.prefill],
+    ...(saved ? [saved] : []),
+    ['decode', fmtTok(s.outTokens) + ' tok (' + fmtDur(s.decodeMs / 1000) + ')', 0, TIPS.decode],
+    ['tool exec', fmtDur(s.toolMs / 1000), 0, TIPS.tool],
+    ['queue wait', fmtDur(s.queueMs / 1000), 0, TIPS.queue],
+    ['turn gaps', fmtDur(s.gapMs / 1000), 0, TIPS.gaps],
+    ['requests', s.requests, 0, TIPS.requests]
+  ];
+  if (TL.ctx < s.peakCtx) rows.push(['peak context', fmtTok(s.peakCtx) + ' tok', 0, TIPS.peak]);
+  if (s.compactions) rows.push(['harness compactions', s.compactions + '×', 0, TIPS.compactions]);
+  rows.push(
+    ['final context', fmtTok(TL.ctx) + ' tok', 0, TIPS.final],
+    ['avg prefill', (s.coldTokens / Math.max(1e-9, s.prefillMs / 1000)).toFixed(0) + ' tok/s', 0, TIPS.avgPrefill],
+    ['avg decode', (s.outTokens / Math.max(1e-9, s.decodeMs / 1000)).toFixed(0) + ' tok/s', 0, TIPS.avgDecode]
+  );
+  /* the cache toggle used to have its own row here, restating the switch above. The rows say it
+     better: with the cache off the "(cached)" row is gone and the prefill count jumps, so the
+     card shows the state instead of repeating it */
+
+  const dl = $('#summary');
+  dl.textContent = '';
+  for (const [k, v, hi, tip] of rows) {
+    const dt = el('dt', hi ? 'hi' : null, k), dd = el('dd', hi ? 'hi' : null, String(v));
+    /* both cells of the row carry it, so the note is reachable anywhere along the line */
+    if (tip) { dt.title = tip; dd.title = tip; }
+    dl.appendChild(dt);
+    dl.appendChild(dd);
+  }
+  $('#tdur').textContent = fmtDur(TL.duration);
+}
+
+/* ------------------------------ curve chart ----------------------------- */
+const SVG_NS = 'http://www.w3.org/2000/svg';
+const CH = { w: 320, h: 132, l: 26, r: 8, t: 8, b: 16 };
+const cxOf = (ctx, xMax) => CH.l + (ctx / xMax) * (CH.w - CH.l - CH.r);
+const cyOf = (mult) => CH.t + (1 - clamp(mult, 0, MULT.axis) / MULT.axis) * (CH.h - CH.t - CH.b);
+const invX = (px, xMax) => ((px - CH.l) / (CH.w - CH.l - CH.r)) * xMax;
+const invY = (py) => (1 - (py - CH.t) / (CH.h - CH.t - CH.b)) * MULT.axis;
+const curveMax = () => Math.max(1000, config.curve[config.curve.length - 1].ctx * 1.12);
+const sortCurve = () => config.curve.sort((a, b) => a.ctx - b.ctx);
+
+function drawCurve() {
+  const svg = $('#curveChart');
+  svg.textContent = '';
+  CH.w = Math.max(200, svg.clientWidth || 320);
+  svg.setAttribute('viewBox', '0 0 ' + CH.w + ' ' + CH.h);
+  const xMax = curveMax();
+  const mk = (tag, attrs, txt) => {
+    const e = document.createElementNS(SVG_NS, tag);
+    for (const k in attrs) e.setAttribute(k, attrs[k]);
+    if (txt != null) e.textContent = txt;
+    svg.appendChild(e);
+    return e;
+  };
+  for (const m of [0, 25, 50, 75, 100]) {
+    mk('line', { class: 'grid', x1: CH.l, x2: CH.w - CH.r, y1: cyOf(m), y2: cyOf(m) });
+    mk('text', { class: 'axis', x: 1, y: cyOf(m) + 3 }, m + '%');
+  }
+  for (const f of [0, 0.5, 1]) {
+    mk('text', { class: 'axis', x: Math.max(1, cxOf(xMax * f, xMax) - 9), y: CH.h - 4 },
+       f === 0 ? '0' : fmtTok(xMax * f));
+  }
+  const pts = config.curve.map(p => [cxOf(p.ctx, xMax), cyOf(p.mult)]);
+  const d = pts.map((p, i) => (i ? 'L' : 'M') + p[0].toFixed(1) + ' ' + p[1].toFixed(1)).join(' ');
+  mk('path', { class: 'area', d: d + ' L' + pts[pts.length - 1][0].toFixed(1) + ' ' + cyOf(0) +
+                                ' L' + pts[0][0].toFixed(1) + ' ' + cyOf(0) + ' Z' });
+  mk('path', { class: 'line', d });
+  config.curve.forEach((p, i) => {
+    const c = mk('circle', { cx: pts[i][0], cy: pts[i][1], r: 4.5 });
+    c.dataset.i = String(i);
+    const tip = document.createElementNS(SVG_NS, 'title');
+    tip.textContent = fmtTok(p.ctx) + ' context → ' + p.mult + '% speed';
+    c.appendChild(tip);
+  });
+  $('#curveN').textContent = String(config.curve.length);
+  drawCurveTable();
+}
+
+/* Enter commits, Escape puts the stored value back; both leave the field */
+function commitOnEnter(node, point, key) {
+  node.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { node.blur(); }
+    else if (e.key === 'Escape') { node.value = String(point[key]); node.blur(); }
+  });
+}
+
+function drawCurveTable() {
+  const tbl = $('#curveTable');
+  tbl.textContent = '';
+  const head = document.createElement('tr');
+  ['context size', 'speed %', ''].forEach(h => head.appendChild(el('th', null, h)));
+  tbl.appendChild(head);
+  config.curve.forEach((p, i) => {
+    const tr = document.createElement('tr');
+    const c1 = document.createElement('td');
+    const i1 = document.createElement('input');
+    i1.type = 'number'; i1.min = '0'; i1.step = String(CTX_STEP); i1.value = String(p.ctx);
+    i1.style.width = '88px';
+    /* commit on blur: redrawing the table destroys these inputs, so updating on
+       every keystroke would steal the caret mid-number. Clamp to the same
+       neighbor bounds the drag uses so an edit can't cross/reorder points. */
+    i1.addEventListener('change', () => {
+      const raw = parseFloat(i1.value) || 0;
+      const lo = i > 0 ? config.curve[i - 1].ctx + CTX_STEP : 0;
+      const hi = i < config.curve.length - 1 ? config.curve[i + 1].ctx - CTX_STEP : Infinity;
+      p.ctx = normCtx(clamp(raw, lo, Math.max(lo, hi)));
+      sortCurve(); drawCurve(); rebuild();
+    });
+    commitOnEnter(i1, p, 'ctx');
+    c1.appendChild(i1);
+    const c2 = document.createElement('td');
+    const i2 = document.createElement('input');
+    i2.type = 'number'; i2.min = String(MULT.min); i2.max = String(MULT.max); i2.step = '5'; i2.value = String(p.mult);
+    i2.style.width = '62px';
+    i2.addEventListener('change', () => {
+      p.mult = normMult(i2.value);
+      drawCurve(); rebuild();
+    });
+    commitOnEnter(i2, p, 'mult');
+    c2.appendChild(i2);
+    const c3 = document.createElement('td');
+    if (config.curve.length > 1) {
+      const b = el('button', null, '×');
+      b.style.padding = '0 7px';
+      b.title = 'remove point';
+      b.addEventListener('click', () => { config.curve.splice(i, 1); sortCurve(); rebuild(); });
+      c3.appendChild(b);
+    }
+    tr.append(c1, c2, c3);
+    tbl.appendChild(tr);
+  });
+}
+
+(function curveDrag() {
+  const svg = $('#curveChart');
+  let idx = -1;
+  /* x-domain is snapshotted at pointerdown: curveMax() derives from the dragged
+     point, so reading it live each move would rescale the axis under the cursor
+     and make a stationary point drift (clamped to hi = xMax) */
+  let xMax = 1000;
+  let captured = false;
+  const local = (e) => {
+    const r = svg.getBoundingClientRect();
+    return { x: ((e.clientX - r.left) / r.width) * CH.w, y: ((e.clientY - r.top) / r.height) * CH.h };
+  };
+  svg.addEventListener('pointerdown', (e) => {
+    const c = e.target.closest ? e.target.closest('circle') : null;
+    if (!c) return;
+    idx = Number(c.dataset.i);
+    xMax = curveMax();
+    captured = false;
+    try { svg.setPointerCapture(e.pointerId); captured = true; } catch (err) {}
+    e.preventDefault();
+  });
+  svg.addEventListener('pointermove', (e) => {
+    if (idx < 0 || !config.curve[idx]) return;
+    const p = local(e), pt = config.curve[idx];
+    const lo = idx > 0 ? config.curve[idx - 1].ctx + CTX_STEP : 0;
+    const hi = idx < config.curve.length - 1 ? config.curve[idx + 1].ctx - CTX_STEP : xMax;
+    pt.ctx = qclampCtx(invX(p.x, xMax), lo, hi);
+    pt.mult = normMult(Math.round(invY(p.y) / 5) * 5);
+    drawCurve(); scheduleRebuild();
+  });
+  const stop = () => { idx = -1; };
+  svg.addEventListener('pointerup', stop);
+  svg.addEventListener('pointercancel', stop);
+  /* only treat a leave as the end of the gesture when we never held capture;
+     with capture the pointer stays logically inside regardless of the boundary */
+  svg.addEventListener('pointerleave', () => { if (!captured) stop(); });
+})();
+
+$('#addPoint').addEventListener('click', () => {
+  const pts = config.curve;
+  let gap = -1, at = pts.length - 1;
+  for (let i = 1; i < pts.length; i++) {
+    const g = pts[i].ctx - pts[i - 1].ctx;
+    if (g > gap) { gap = g; at = i - 1; }
+  }
+  const a = pts[at], b = pts[at + 1];
+  if (b) {
+    /* only insert between two points when there is real room; a zero/duplicate
+       gap would add another coincident point and deadlock the editor */
+    const mid = Math.round((a.ctx + b.ctx) / 2 / CTX_STEP) * CTX_STEP;
+    if (mid <= a.ctx || mid >= b.ctx) return;
+    pts.push({ ctx: mid, mult: Math.round((a.mult + b.mult) / 2) });
+  } else {
+    pts.push({ ctx: normCtx(a.ctx) + CTX_STEP * 32, mult: Math.max(MULT.min, a.mult - 20) });
+  }
+  sortCurve(); rebuild();
+});
+
+for (const b of document.querySelectorAll('[data-curve]')) {
+  b.addEventListener('click', () => { config.curve = mkPts(CURVES[b.dataset.curve]); rebuild(); });
+}
+
+/* ------------------------------ settings UI ----------------------------- */
+/* single source of per-parameter bounds shared by the slider ranges, the number
+   inputs, and their clamps so the field and the slider can never drift apart */
+const PARAMS = {
+  prefill: { min: 500, max: 200000, log: true },
+  decode:  { min: 1, max: 600, log: true }
+};
+const RANGE = { prefill: [PARAMS.prefill.min, PARAMS.prefill.max], decode: [PARAMS.decode.min, PARAMS.decode.max] };
+const toRange = (v, r) => clamp((Math.log(clamp(v, r[0], r[1]) / r[0]) / Math.log(r[1] / r[0])) * 100, 0, 100);
+const fromRange = (p, r) => {
+  const v = r[0] * Math.pow(r[1] / r[0], clamp(p, 0, 100) / 100);
+  return Math.max(r[0], Math.round(v));
+};
+
+/* the standing note under the engine controls, and the one thing it says when no control is
+   being asked about */
+const HINT_TTFT = 'TTFT ≈ queue + prefill + decode 1 token';
+function syncEngine() {
+  $('#prefill').value = String(config.prefill);
+  $('#decode').value = String(config.decode);
+  $('#prefillRange').value = String(toRange(config.prefill, RANGE.prefill));
+  $('#decodeRange').value = String(toRange(config.decode, RANGE.decode));
+  $('#cache').checked = !!config.cache;
+  /* one line, three durations, in the order the phases happen. It stays a sum because that is
+     all the reader needs here: rates and the curve belong on the hover, and a rate in place of
+     a duration is wrong twice over — it understates prefill on every curve below 100%, and it
+     implies TTFT is decode-bound when it is prefill-bound. The third term is not decoration:
+     the first token is placed one decode step after prefill ends, not on the boundary. */
+  $('#engineHint').textContent = HINT_TTFT;
+}
+function syncContention() {
+  $('#latency').value = String(config.latency);
+  $('#jitter').value = String(config.jitter);
+}
+
+const num = (id, key, min, max, int) => {
+  const node = $('#' + id);
+  node.addEventListener('input', () => {
+    let v = parseFloat(node.value);
+    if (!Number.isFinite(v)) return;
+    v = clamp(v, min, max);
+    if (int) v = Math.round(v);
+    config[key] = v;
+    /* reflect the clamped value back into the field so the panel and the model
+       (and the Link card) cannot disagree */
+    if (String(node.value) !== String(v)) node.value = String(v);
+    if (RANGE[key]) $('#' + key + 'Range').value = String(toRange(v, RANGE[key]));
+    /* coalesce like the sliders: a typed multi-digit value rebuilds once, not
+       once per keystroke */
+    scheduleRebuild();
+  });
+};
+num('prefill', 'prefill', PARAMS.prefill.min, PARAMS.prefill.max, true);
+num('decode', 'decode', PARAMS.decode.min, PARAMS.decode.max, true);
+num('latency', 'latency', 0, 120000, true);
+num('jitter', 'jitter', 0, 60000, true);
+
+$('#cache').addEventListener('change', (e) => {
+  config.cache = !!e.target.checked;
+  syncEngine();
+  rebuild();
+});
+
+for (const key of ['prefill', 'decode']) {
+  $('#' + key + 'Range').addEventListener('input', (e) => {
+    config[key] = fromRange(parseFloat(e.target.value), RANGE[key]);
+    syncEngine();
+    scheduleRebuild();
+  });
+}
+
+const sessionSel = $('#session');
+for (const s of SESSIONS) {
+  const o = document.createElement('option');
+  /* the topbar wraps before it shrinks the picker, but a narrow window still clips
+     the longest scenario name, so the full label is in the tooltip */
+  o.value = s.id; o.textContent = s.name; o.title = s.name;
+  sessionSel.appendChild(o);
+}
+sessionSel.value = config.session;
+sessionSel.addEventListener('change', () => {
+  config.session = sessionSel.value;
+  userScrolled = false;
+  rebuild();
+  /* a new scenario starts parked at zero: switching corpus is a deliberate act,
+     so never resume on autoplay the way a page load does */
+  pause();
+  seek(0);
+});
+
+const speedSel = $('#speed');
+for (const s of SPEEDS) {
+  const o = document.createElement('option');
+  o.value = String(s); o.textContent = String(s) + '×';
+  speedSel.appendChild(o);
+}
+speedSel.value = String(config.speed);
+speedSel.addEventListener('change', () => {
+  config.speed = parseFloat(speedSel.value) || 1;
+  if (playing) { anchorWall = performance.now(); anchorV = vTime; }
+  updateShare();
+});
+
+$('#play').addEventListener('click', togglePlay);
+$('#restart').addEventListener('click', () => { userScrolled = false; seek(0); play(); });
+$('#theme').addEventListener('click', () => {
+  config.theme = config.theme === 'light' ? 'dark' : 'light';
+  document.documentElement.dataset.theme = config.theme;
+  updateShare();
+});
+$('#panelToggle').addEventListener('click', () => document.documentElement.classList.toggle('no-panel'));
+/* shift steps backwards, so one rectangle covers both directions */
+$('#phase').addEventListener('click', (e) => stepPhase(e.shiftKey ? -1 : 1));
+$('#reset').addEventListener('click', () => { location.href = location.pathname; });
+
+/* the phase bar is also a control: it steps the playhead to the next phase boundary,
+   which is how you walk a session turn by turn instead of hunting the seek bar for the
+   edge of a band. Boundaries come from TL.segments, the same list the bands are painted
+   from, so a click lands exactly where the colour changes. */
+function stepPhase(dir) {
+  const eps = 1e-6;
+  const seg = TL.segments;
+  if (dir > 0) {
+    const next = seg.find((s) => s.from > vTime + eps);
+    seek(next ? next.from : TL.duration);
+  } else {
+    /* stepping back lands on the start of the current phase unless we are already
+       within a hair of it, in which case the previous phase is next */
+    const here = seg.find((s) => vTime >= s.from - eps && vTime < s.to - eps);
+    if (here && vTime - here.from > 0.2) seek(here.from);
+    else {
+      const prev = seg.slice().reverse().find((s) => s.from < vTime - eps);
+      seek(prev ? prev.from : 0);
+    }
+  }
+}
+
+/* seek by click / drag */
+(function seekDrag() {
+  const bar = $('#seek');
+  let dragging = false;
+  const at = (e) => {
+    const r = bar.getBoundingClientRect();
+    seek(((e.clientX - r.left) / Math.max(1, r.width)) * TL.duration);
+  };
+  bar.addEventListener('pointerdown', (e) => { dragging = true; try { bar.setPointerCapture(e.pointerId); } catch (err) {} at(e); e.preventDefault(); });
+  bar.addEventListener('pointermove', (e) => { if (dragging) at(e); });
+  bar.addEventListener('pointerup', () => { dragging = false; });
+  bar.addEventListener('pointercancel', () => { dragging = false; });
+})();
+
+transcript.addEventListener('wheel', (e) => {
+  /* wheeling up means "show me the older part", so it takes the pane away from the sim.
+     Wheeling down does not: follow() sometimes holds a tall block by its first line, and
+     then being far from the bottom is the normal state, not a reader taking over. */
+  if (e.deltaY < 0) userScrolled = true;
+}, { passive: true });
+
+transcript.addEventListener('scroll', () => {
+  /* recognise our own scroll by the position we set, not by counting events, since the
+     browser is free to coalesce them — and a reader who has caught up with the live edge
+     gets the pane back */
+  if (followTop !== null && Math.abs(transcript.scrollTop - followTop) < 2) return;
+  userScrolled = transcript.scrollHeight - transcript.scrollTop - transcript.clientHeight > 8;
+}, { passive: true });
+
+document.addEventListener('keydown', (e) => {
+  /* never hijack browser shortcuts (Cmd/Ctrl/Alt) or typing in fields */
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
+  const t = e.target;
+  if (t && /^(INPUT|SELECT|TEXTAREA|BUTTON)$/.test(t.tagName || '')) return;
+  if (e.code === 'Space') { e.preventDefault(); togglePlay(); }
+  else if (e.key === 'r' || e.key === 'R') { userScrolled = false; seek(0); play(); }
+  else if (e.key === 'ArrowRight') { e.preventDefault(); seek(vTime + (e.shiftKey ? 5 : 1)); }
+  else if (e.key === 'ArrowLeft') { e.preventDefault(); seek(vTime - (e.shiftKey ? 5 : 1)); }
+  else if (e.key === 'p' || e.key === 'P') document.documentElement.classList.toggle('no-panel');
+  else if (e.key >= '1' && e.key <= String(SPEEDS.length)) {
+    config.speed = SPEEDS[Number(e.key) - 1];
+    speedSel.value = String(config.speed);
+    if (playing) { anchorWall = performance.now(); anchorV = vTime; }
+    updateShare();
+  }
+});
+
+/* ------------------------------- sharing -------------------------------- */
+function shareURL() {
+  const base = location.href.split('?')[0].split('#')[0];
+  const p = new URLSearchParams();
+  p.set('session', config.session);
+  p.set('prefill', String(config.prefill));
+  p.set('decode', String(config.decode));
+  p.set('latency', String(config.latency));
+  p.set('jitter', String(config.jitter));
+  p.set('cache', config.cache ? '1' : '0');
+  p.set('speed', String(config.speed));
+  p.set('curve', config.curve.map(c => Math.round(c.ctx) + ':' + Math.round(c.mult)).join(','));
+  p.set('autoplay', config.autoplay ? '1' : '0');
+  p.set('theme', config.theme);
+  return base + '?' + p.toString();
+}
+function updateShare() { $('#shareUrl').value = shareURL(); }
+
+$('#copy').addEventListener('click', async () => {
+  const url = shareURL();
+  const box = $('#copy');
+  const done = (txt) => { const old = box.textContent; box.textContent = txt; setTimeout(() => { box.textContent = old; }, 1200); };
+  try { await navigator.clipboard.writeText(url); done('copied ✓'); }
+  catch (err) { $('#shareUrl').select(); document.execCommand('copy'); done('copied ✓'); }
+});
+$('#shareUrl').addEventListener('focus', (e) => e.target.select());
+
+/* --------------------------------- boot --------------------------------- */
+document.documentElement.dataset.theme = config.theme === 'light' ? 'light' : 'dark';
+window.addEventListener('resize', () => drawCurve());
+syncEngine();
+syncContention();
+rebuild();
+if (config.autoplay) play(); else { updatePlayBtn(); render(vTime); }
+/* the console and the selftest both want to know where the playhead actually is, as
+   opposed to what the clock says after formatting */
+window.AS = { config, sessions: SESSIONS, profileStats, get tl() { return TL; }, get vTime() { return vTime; },
+              rebuild, seek, play, pause, phaseAt, render, stepPhase };

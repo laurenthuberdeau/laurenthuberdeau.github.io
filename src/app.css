@@ -1,0 +1,246 @@
+  :root {
+    --bg: #0a0c10; --bg-2: #0e1218; --panel: #11161f; --panel-2: #151b26;
+    --border: #1e2734; --border-2: #2a3546;
+    --fg: #d6deeb; --fg-dim: #8d9bb0; --fg-dimmer: #5d6b80;
+    --accent: #4ec9ff;   /* chrome only: buttons, focus, sliders, the decay curve */
+    --user: #7fb2ff; --warn: #ff7b7b;
+    /* The phase encoding, one colour per phase, shared by the phase bar and the bands
+       on the seek bar. Queue is white — nothing has started for you yet, so it gets the
+       absence of colour — and prefill holds the amber: at bar height prefill blue sat
+       too close to decode green to tell apart. The light theme can't put a white band
+       on a white panel, so there queue inverts to a dark neutral instead, and amber
+       darkens to stay readable as phase text. */
+    --queue: #f2f6fc; --prefill: #f0a35e; --decode: #6ee7a8; --tool: #cf8bff;
+    --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  }
+  html[data-theme="light"] {
+    --bg: #f7f8fa; --bg-2: #eef1f5; --panel: #ffffff; --panel-2: #f2f5f9;
+    --border: #dde3ec; --border-2: #c6cfdd;
+    --fg: #1d2530; --fg-dim: #5c6a7d; --fg-dimmer: #8a97a8;
+    --accent: #0b7bb5;
+    --user: #1f6feb; --warn: #c0392b;
+    --queue: #4f5d73; --prefill: #b26a16; --decode: #157f4a; --tool: #8b3fc4;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg); font-family: var(--mono);
+    font-size: 13px; line-height: 1.55; display: flex; flex-direction: column; overflow: hidden;
+  }
+  .topbar {
+    display: flex; align-items: center; gap: 8px; padding: 8px 12px;
+    background: var(--bg-2); border-bottom: 1px solid var(--border);
+    flex: 0 0 auto; flex-wrap: wrap;
+  }
+  .brand { font-weight: 700; letter-spacing: .5px; white-space: nowrap; }
+  .brand em { color: var(--accent); font-style: normal; }
+  select, input[type="number"], button {
+    font-family: inherit; font-size: 12px; color: var(--fg); background: var(--panel);
+    border: 1px solid var(--border-2); border-radius: 5px; padding: 4px 7px;
+  }
+  button { cursor: pointer; }
+  button:hover { border-color: var(--accent); color: var(--accent); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #06121a; font-weight: 700; min-width: 84px; }
+  button.primary:hover { filter: brightness(1.12); color: #06121a; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  input[type="number"] { width: 96px; }
+  input[type="checkbox"] { width: 15px; height: 15px; accent-color: var(--accent); }
+  /* the two engine sliders were the only panel controls with no frame, so their bare UA
+     track nearly vanished into the card. Same border as the number field above them, and
+     padding so the thumb has room to sit inside it rather than ride the edge. The bottom
+     margin keeps the framed box off the row beneath it, and is wider than the 4px the row
+     above leaves, because each slider belongs to the field over it, not the one under. */
+  input[type="range"] {
+    width: 100%; accent-color: var(--accent); background: var(--panel);
+    border: 1px solid var(--border-2); border-radius: 5px; padding: 4px 6px; margin: 0 0 6px;
+  }
+  /* the tail stays at the right edge whether it shares the header line or is pushed onto one
+     of its own. A stretchy spacer only worked while everything fitted on a single line; once
+     the header wrapped, the buttons sat at the left edge of the next line, so the same control
+     moved between the two ends of the bar depending on width. An auto margin pins the edge. */
+  .tail { margin-left: auto; display: flex; align-items: center; gap: 8px; flex: 0 0 auto; }
+  .clock { color: var(--fg-dim); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .clock b { color: var(--fg); font-weight: 600; }
+
+  .seek {
+    position: relative; height: 7px; flex: 1 1 120px; min-width: 90px;
+    background: var(--panel-2); border: 1px solid var(--border); border-radius: 4px; cursor: pointer;
+    touch-action: none;
+  }
+  /* the bar is the timeline drawn to scale, not a progress gradient: one band per
+     phase run in that phase's colour, dimmed ahead of the playhead and full
+     strength behind it. TL.segments lays out both strips, so the bands land where
+     the phases actually happened rather than where an even blend would put them. */
+  .seek .track, .seek .played {
+    position: absolute; inset: 0; display: flex; overflow: hidden; border-radius: 3px;
+  }
+  .seek .track { opacity: .3; }
+  .seek .played { clip-path: inset(0 100% 0 0); }
+  .seek .seg { flex: 1 1 0; }
+  .seek .seg[data-phase="queue"]   { background: var(--queue); }
+  .seek .seg[data-phase="prefill"] { background: var(--prefill); }
+  .seek .seg[data-phase="decode"]  { background: var(--decode); }
+  .seek .seg[data-phase="tool"]    { background: var(--tool); }
+  .seek .seg[data-phase="gap"]     { background: var(--border-2); }
+  /* the playhead takes the colour of the phase it sits in, like the phase bar above, and
+     a var(--bg) ring so it still reads against a played band of its own colour */
+  .seek .head { position: absolute; top: -2px; width: 2px; height: 11px; background: var(--fg); left: 0; box-shadow: 0 0 0 1px var(--bg); }
+  .seek[data-phase="queue"]   .head { background: var(--queue); }
+  .seek[data-phase="prefill"] .head { background: var(--prefill); }
+  .seek[data-phase="decode"]  .head { background: var(--decode); }
+  .seek[data-phase="tool"]    .head { background: var(--tool); }
+
+  /* One rectangle instead of a row of four chips: it names the phase it is in, takes
+     that phase's colour (heading, stripe and wash all read from --c) and fills as the
+     phase runs. Same encoding as the bands and the playhead, a third of the height,
+     and unlike four fixed-minimum boxes it survives a narrow window. */
+  .phasebar {
+    --c: var(--fg-dimmer); --frac: 0;
+    position: relative; flex: 0 0 auto; overflow: hidden; user-select: none;
+    display: flex; align-items: baseline; gap: 10px;
+    padding: 7px 12px; background: var(--bg-2); border-bottom: 1px solid var(--border);
+    box-shadow: inset 3px 0 0 var(--c);
+    font-family: var(--mono); font-size: 11px; line-height: 1.3;
+    cursor: pointer;   /* it steps to the next phase; see stepPhase */
+  }
+  .phasebar:hover { background: var(--panel); }
+  .phasebar .k { position: relative; flex: 0 0 auto; font-size: 10px; font-weight: 600; letter-spacing: 1.5px; text-transform: uppercase; color: var(--c); white-space: nowrap; }
+  /* min-width: 0 so the detail can actually shrink and ellipsize instead of pushing
+     the bar wider than the window */
+  .phasebar .v { position: relative; min-width: 0; flex: 1 1 auto; color: var(--fg-dim); font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  /* the hint names where a click would land, so the control is discoverable without
+     having to click it to find out */
+  .phasebar .next { position: relative; flex: 0 0 auto; margin-left: auto; padding-left: 12px; color: var(--fg-dimmer); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .phasebar:hover .next { color: var(--c); }
+  /* the wash carries the progress as a tint, so it takes the phase colour at low alpha;
+     the heading and stripe above stay full strength because opacity is per element */
+  .phasebar .fill { position: absolute; left: 0; top: 0; bottom: 0; width: 0; background: var(--c); opacity: .13; }
+  .phasebar[data-phase="queue"]   { --c: var(--queue); }
+  .phasebar[data-phase="prefill"] { --c: var(--prefill); }
+  .phasebar[data-phase="decode"]  { --c: var(--decode); }
+  .phasebar[data-phase="tool"]    { --c: var(--tool); }
+  /* the non-phases: a turn gap belongs to the harness rather than the engine, and
+     idle/done have nothing running — neither gets to borrow a phase's colour */
+  .phasebar[data-phase="gap"], .phasebar[data-phase="idle"], .phasebar[data-phase="done"] { --c: var(--fg-dimmer); }
+
+  main { flex: 1 1 auto; display: flex; min-height: 0; }
+  /* Blocks are revealed by opacity, so every message in the session is laid out from the
+     first frame and the pane's scroll height is the whole run. Bottom padding used to be
+     26vh, which made the pane overflow its own content by a quarter of the viewport: it wore
+     a scrollbar with three short messages in it, when the bar is supposed to mean "there is
+     more to read" rather than "there is blank space below". What is left is exactly the gap
+     follow() asks for under a streaming line — keep the two in step, or the live line lands
+     either flush against the pane edge or with a scrollbar to spare. */
+  .transcript { flex: 1 1 auto; overflow-y: auto; padding: 18px 22px 12px; }
+  .panel {
+    width: 372px; flex: 0 0 372px; border-left: 1px solid var(--border);
+    background: var(--bg-2); overflow-y: auto; padding: 10px;
+  }
+  body.no-panel .panel { display: none; }
+  /* panel visibility lives on the root element so the head script can close it on a narrow
+     window before first paint — a panel that shows and then vanishes is a flash */
+  html.no-panel .panel { display: none; }
+
+  .msg { margin: 0 0 14px; opacity: 0; }
+  .msg.shown { opacity: 1; }
+  .tag {
+    font-size: 10px; letter-spacing: 1.3px; text-transform: uppercase; color: var(--fg-dimmer);
+    margin-bottom: 3px; display: flex; gap: 8px; align-items: baseline;
+  }
+  .tag .rt { color: var(--fg-dim); letter-spacing: 0; text-transform: none; }
+  .msg.user .tag { color: var(--user); }
+  .msg.user .body { border-left: 2px solid var(--user); padding-left: 10px; }
+  .msg.system .body { border-left: 2px solid var(--border-2); padding-left: 10px; color: var(--fg-dim); font-size: 12px; }
+  .msg.system .tag { color: var(--fg-dimmer); }
+  .body { white-space: pre-wrap; word-break: break-word; }
+  .toks { color: var(--fg-dimmer); }
+  .toolcall {
+    border: 1px solid var(--border-2); border-left: 2px solid var(--tool); border-radius: 6px;
+    background: var(--panel); padding: 6px 10px; margin: 7px 0 0;
+  }
+  .toolcall .tag { color: var(--tool); margin-bottom: 2px; }
+  .toolcall .args { color: var(--fg-dim); white-space: pre-wrap; word-break: break-word; }
+  .toolout {
+    border: 1px solid var(--border); border-left: 2px solid var(--border-2); border-radius: 6px;
+    background: var(--panel-2); padding: 6px 10px; color: var(--fg-dim);
+    white-space: pre-wrap; word-break: break-word; max-height: 250px; overflow-y: auto; position: relative;
+  }
+  .toolout.elided::after {
+    content: ""; position: absolute; inset: auto 0 0 0; height: 56px;
+    background: linear-gradient(transparent, var(--panel-2));
+  }
+  .msg.tool .tag { color: var(--fg-dim); }
+  .cursor {
+    display: inline-block; width: 7px; height: 1.05em; vertical-align: -.15em;
+    background: var(--decode); margin-left: 1px; animation: blink 1s steps(1) infinite;
+  }
+  @keyframes blink { 50% { opacity: 0; } }
+  .msg.streaming .cursor { animation: none; opacity: 1; }
+
+  .card { border: 1px solid var(--border); border-radius: 8px; background: var(--panel); padding: 9px 10px; margin-bottom: 10px; }
+  .card > h2 { font-size: 10px; letter-spacing: 1.4px; text-transform: uppercase; color: var(--fg-dim); margin: 0 0 8px; font-weight: 600; }
+  .row { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+  .row .cap { flex: 1 1 auto; color: var(--fg-dim); }
+  .unit { color: var(--fg-dimmer); font-size: 11px; width: 46px; }
+  /* One line for the pair the group is about, with the units to the right of their fields as
+     everywhere else in the panel: the only concession to fitting both is a narrower unit
+     column, since "ms" does not need the 46px the engine's "tok/s" is sized for. The ±
+     between the fields reads as the relationship they have — jitter is the spread on that
+     same wait, not a second setting beside it — and the row may wrap rather than clip if the
+     panel ever gets tighter. */
+  .row.duo { flex-wrap: wrap; }
+  .row.duo .cap { white-space: nowrap; }
+  .row.duo input[type="number"] { width: 68px; flex: 0 0 auto; }
+  .row.duo .unit { width: auto; flex: 0 0 auto; }
+  .row.duo .pm { flex: 0 0 auto; color: var(--fg-dimmer); }
+  .hint { color: var(--fg-dimmer); font-size: 11px; }
+  /* a group inside a card. Contention is a property of the engine rather than a thing next
+     to it, so the rows that model it are set off with a rule and a caption instead of being
+     promoted to a card of their own — the caption carries the definition on hover, the way
+     the summary rows do, so the card stays a list of controls */
+  .gsub {
+    margin: 10px 0 6px; padding-top: 8px; border-top: 1px solid var(--border);
+    color: var(--fg-dimmer); font-size: 10px; letter-spacing: .1em; text-transform: uppercase;
+    cursor: help;
+  }
+  table { width: 100%; border-collapse: collapse; font-size: 11px; font-variant-numeric: tabular-nums; }
+  th { text-align: left; color: var(--fg-dimmer); font-weight: 500; font-size: 10px; text-transform: uppercase; letter-spacing: .6px; padding: 2px 4px; }
+  td { padding: 2px 4px; border-top: 1px solid var(--border); color: var(--fg-dim); }
+  td.n { text-align: right; }
+  tr.live td { color: var(--fg); }
+  tr.pending td { opacity: .35; }
+  /* the first request after a harness compaction pays a re-prefill: flag the row */
+  tr.post-compact td:first-child { box-shadow: inset 4px 0 0 var(--warn); }
+  svg.chart { width: 100%; height: 132px; display: block; touch-action: none; }
+  svg.chart .grid { stroke: var(--border); stroke-width: 1; }
+  svg.chart .axis { fill: var(--fg-dimmer); font-size: 8px; font-family: var(--mono); }
+  svg.chart path.line { fill: none; stroke: var(--accent); stroke-width: 1.75; }
+  svg.chart path.area { fill: var(--accent); opacity: .1; stroke: none; }
+  svg.chart circle { fill: var(--bg); stroke: var(--accent); stroke-width: 1.75; cursor: grab; }
+  svg.chart circle:hover { fill: var(--accent); }
+  .btns { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
+  .btns button { flex: 1 1 auto; font-size: 11px; padding: 3px 6px; }
+  input.share { width: 100%; font-size: 10px; color: var(--fg-dim); background: var(--panel-2); border: 1px solid var(--border); border-radius: 5px; padding: 5px 6px; }
+  dl.summary { margin: 0; display: grid; grid-template-columns: 1fr auto; gap: 2px 8px; font-size: 11px; }
+  dl.summary dt { color: var(--fg-dimmer); }
+  dl.summary dd { margin: 0; text-align: right; color: var(--fg); font-variant-numeric: tabular-nums; }
+  /* the summary sits at the top of the panel because it is the thing you come back to
+     after every settings change, and the first two rows are what it is for: where the
+     wall time went, and the split between the two faces of inference */
+  dl.summary dt.hi { color: var(--fg-dim); font-weight: 600; }
+  dl.summary dd.hi { font-weight: 600; }
+  /* every row has a hover note, so say so with the cursor rather than leaving the
+     definitions undiscoverable; same affordance as the seek bands */
+  /* one documentation mechanism for the whole page: a native note on hover, and the cursor
+     says there is one to find */
+  dl.summary [title], .ctl[title], .row[title], .gsub[title], .hint[title] { cursor: help; }
+  .kbd { border: 1px solid var(--border-2); border-bottom-width: 2px; border-radius: 4px; padding: 0 4px; color: var(--fg-dim); font-size: 11px; }
+  @media (max-width: 900px) {
+    /* On a narrow window the panel is a view, not a sidebar. Stacked under the session it
+     started a screen below the phase bar and both halves were too short to read, so the two
+     swap instead: opening the panel takes everything under the bar, and closing it gives the
+     room back to the session. Each view scrolls itself, so main does not scroll as well. */
+    main { flex-direction: column; overflow: hidden; }
+    .panel { width: 100%; flex: 1 1 auto; min-height: 0; border-left: none; }
+    html:not(.no-panel) .transcript { display: none; }
+  }

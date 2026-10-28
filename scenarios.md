@@ -1,7 +1,7 @@
 # Session scenarios
 
 The simulator's scenarios are pure data: each is an entry in the `SESSIONS` array in
-`index.html` with a `bootTokens` count and an ordered list of `steps`. The model (prefill /
+`src/scenarios.js` with a `bootTokens` count and an ordered list of `steps`. The model (prefill /
 decode / cache / curve / contention) is the same for every scenario — a corpus exists to give
 *shape* to that model, and each scenario is designed to exercise a different shape. Adding a
 scenario requires zero code changes: the dropdown, the `session=` URL parameter, the ledger and

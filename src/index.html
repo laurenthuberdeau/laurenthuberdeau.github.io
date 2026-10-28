@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agentic Session Simulator</title>
+<style>
+/* inject:css */
+</style>
+<script>
+/* Apply the theme before first paint: explicit ?theme= wins, otherwise follow
+   the OS. window.AS_THEME is the single source the boot config reads, so the
+   resolved theme can't disagree between head and script. */
+(function () {
+  var t = new URLSearchParams(location.search).get('theme');
+  t = (t === 'light' || t === 'dark')
+    ? t
+    : ((window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches) ? 'light' : 'dark');
+  window.AS_THEME = t;
+  document.documentElement.dataset.theme = t;
+  /* On a narrow window the panel is a whole view rather than a sidebar, so the two cannot be
+     up together. The session is the thing worth seeing, so it gets the space on load and
+     `panel` / `P` swaps between them. Decided here, before paint, for the same reason the
+     theme is: opening the panel should not be the page's first motion. */
+  if (window.matchMedia && window.matchMedia('(max-width: 900px)').matches)
+    document.documentElement.classList.add('no-panel');
+})();
+</script>
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">agentic<em>·</em>sim</div>
+  <select id="session" title="Built-in session corpus"></select>
+  <button id="play" class="primary">▶ run</button>
+  <button id="restart" title="Restart (R)">↺</button>
+  <select id="speed" title="Playback speed"></select>
+  <div class="seek" id="seek"><div class="track"></div><div class="played"></div><div class="head"></div></div>
+  <div class="clock"><b id="tcur">0.00s</b> / <span id="tdur">0.00s</span></div>
+  <div class="tail">
+    <button id="theme" title="Toggle theme">◐</button>
+    <button id="panelToggle" title="Toggle settings (P)">settings</button>
+  </div>
+</header>
+
+<div class="phasebar" id="phase" data-phase="idle"
+     title="The phase the engine is in right now — queue, prefill, decode or the tool call execution. Click to step to the next phase, shift-click to step back.">
+  <div class="fill"></div><span class="k">idle</span><span class="v">—</span><span class="next"></span>
+</div>
+
+<main>
+  <section class="transcript" id="transcript"></section>
+  <aside class="panel" id="panel">
+    <div class="card">
+      <h2>Session summary</h2>
+      <dl class="summary" id="summary"></dl>
+    </div>
+
+    <div class="card">
+      <h2>Engine</h2>
+      <!-- the name is a caption, not a label pointing at the control: a browser suppresses the
+           title tooltip on such a label, and that is exactly the text you hover to learn what a
+           setting means. So the row carries the note once and everything inside it — caption,
+           field, unit, slider — answers with it by inheritance, while the control keeps its
+           accessible name through aria-labelledby. What is given up is click-to-focus on the
+           name; the field and slider are still clicked directly. -->
+      <div class="ctl" title="Tokens per second while processing the prompt. A request re-reads only the part of the context that is not cached (if enabled), that is, the part that was added since the last request. Prefill speed decays as the context grows, following the decay curve.">
+        <div class="row"><span class="cap" id="prefillName">prefill speed</span><input id="prefill" type="number" min="500" step="500" aria-labelledby="prefillName"><span class="unit">tok/s</span></div>
+        <input id="prefillRange" aria-label="prefill speed, as a slider" type="range" min="0" max="100" step="0.5">
+      </div>
+      <div class="ctl" title="Tokens per second while generating output: prose, chain of thought and tool-calls. Decode speed decays as the context grows, following the decay curve.">
+        <div class="row"><span class="cap" id="decodeName">decode speed</span><input id="decode" type="number" min="1" step="1" aria-labelledby="decodeName"><span class="unit">tok/s</span></div>
+        <input id="decodeRange" aria-label="decode speed, as a slider" type="range" min="0" max="100" step="0.5">
+      </div>
+      <div class="row" title="Cache prompt tokens between requests, so the engine does not have to re-process them on every turn. The cache is invalidated by a context compaction."><span class="cap" id="cacheName">prompt cache</span><input id="cache" type="checkbox" aria-labelledby="cacheName"><span class="unit"></span></div>
+      <div class="gsub"
+           title="Waits the engine imposes outside the model's own work. At zero, the run is a pure throughput model.">contention</div>
+      <div class="row duo" title="Time it takes for the engine to start working on a request."><span class="cap" id="latencyName">request latency</span><input id="latency" type="number" min="0" step="50" aria-labelledby="latencyName"><span class="pm" aria-hidden="true">±</span><input id="jitter" type="number" min="0" step="50" aria-label="time variation in the request latency, in ms" title="Time variation in the request latency, introducing some randomness to the wait."><span class="unit">ms</span></div>
+      <div class="hint" id="engineHint" title="Time to first token: time it takes to get the first token returned by the engine."></div>
+    </div>
+
+    <div class="card">
+      <h2>Throughput decay curve · <span id="curveN">N</span>-point</h2>
+      <svg class="chart" id="curveChart" viewBox="0 0 320 132" preserveAspectRatio="none"></svg>
+      <table id="curveTable"></table>
+      <div class="btns">
+        <button data-curve="flat">flat</button>
+        <button data-curve="gentle">gentle</button>
+        <button data-curve="steep">steep</button>
+        <button data-curve="cliff">cliff</button>
+        <button id="addPoint">+ point</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Request ledger</h2>
+      <table id="ledger"></table>
+    </div>
+
+    <div class="card">
+      <h2>Link</h2>
+      <input class="share" id="shareUrl" aria-label="link that reopens this exact run" readonly>
+      <div class="btns"><button id="copy">copy link</button><button id="reset">defaults</button></div>
+      <div class="hint" style="margin-top:8px">
+        <span class="kbd">space</span> play · <span class="kbd">R</span> restart · <span class="kbd">←→</span> seek · <span class="kbd">1..7</span> speed · <span class="kbd">P</span> panel
+      </div>
+    </div>
+  </aside>
+</main>
+
+<script>
+/* inject:app */
+</script>
+</body>
+</html>

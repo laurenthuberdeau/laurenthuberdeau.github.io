@@ -2,8 +2,11 @@
    then drives transport, keyboard, settings, curve editor and seek handlers.
    Usage: node tools/selftest.mjs [index.html] ["?query"]  */
 import fs from 'node:fs';
+import path from 'node:path';
+import { build as buildPage, OUT as BUILD_OUT } from './build.mjs';
 
-const html = fs.readFileSync(process.argv[2] || 'index.html', 'utf8');
+const TARGET = path.resolve(process.argv[2] || 'index.html');
+const html = fs.readFileSync(TARGET, 'utf8');
 /* the page now has a small pre-paint theme script in <head>; grab the app
    script (the one that defines window.AS — note AS_THEME also prefixes AS), not
    the first <script> tag */
@@ -115,6 +118,17 @@ const ok = (name, cond, extra = '') => {
   if (!cond) failed++;
   console.log((cond ? 'PASS ' : 'FAIL ') + name + (extra ? '  ' + extra : ''));
 };
+/* index.html is generated from src/. Hand-editing the artifact is the one mistake the split makes
+   easy \u2014 the edit works, looks fine, and vanishes on the next build. Only checked when the file
+   under test IS the artifact, so a doctored copy stays testable. */
+if (TARGET === BUILD_OUT) {
+  let fresh = false, why = '';
+  try { fresh = buildPage() === html; if (!fresh) why = 'src/ says it should differ'; }
+  catch (e) { why = e.message; }
+  ok('index.html is the current build of src/', fresh,
+     fresh ? 'matches src/{index.html,app.css,app.js,scenarios.js}'
+           : 'run node tools/build.mjs \u2014 ' + why);
+}
 const pump = () => { const f = frames; frames = []; f.forEach((fn) => guard('frame', () => fn(perf.now()))); };
 const $ = (sel) => cache.get(sel);
 
