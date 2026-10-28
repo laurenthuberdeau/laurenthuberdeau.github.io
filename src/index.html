@@ -35,16 +35,16 @@
   <button id="play" class="primary">▶ run</button>
   <button id="restart" title="Restart (R)">↺</button>
   <select id="speed" title="Playback speed"></select>
-  <div class="seek" id="seek"><div class="track"></div><div class="played"></div><div class="head"></div></div>
+  <div class="seek" id="seek" role="slider" tabindex="0" aria-label="seek the run" aria-valuemin="0"><div class="track"></div><div class="played"></div><div class="head"></div></div>
   <div class="clock"><b id="tcur">0.00s</b> / <span id="tdur">0.00s</span></div>
   <div class="tail">
-    <button id="theme" title="Toggle theme">◐</button>
-    <button id="panelToggle" title="Toggle settings (P)">settings</button>
+    <button id="theme" title="Toggle theme" aria-label="toggle theme">◐</button>
+    <button id="panelToggle" title="Toggle settings (P)" aria-expanded="false">settings</button>
   </div>
 </header>
 
-<div class="phasebar" id="phase" data-phase="idle"
-     title="The phase the engine is in right now — queue, prefill, decode or the tool call execution. Click to step to the next phase, shift-click to step back.">
+<div class="phasebar" id="phase" data-phase="idle" role="button" tabindex="0"
+     title="The phase the engine is in right now — queue, prefill, decode or the tool call execution. Click (or enter/space) to step to the next phase, shift-click to step back.">
   <div class="fill"></div><span class="k">idle</span><span class="v">—</span><span class="next"></span>
 </div>
 
@@ -73,17 +73,17 @@
            accessible name through aria-labelledby. What is given up is click-to-focus on the
            name; the field and slider are still clicked directly. -->
       <div class="ctl" title="Tokens per second while processing the prompt. A request re-reads only the part of the context that is not cached (if enabled), that is, the part that was added since the last request. Prefill speed decays as the context grows, following the decay curve.">
-        <div class="row"><span class="cap" id="prefillName">prefill speed</span><input id="prefill" type="number" min="500" step="500" aria-labelledby="prefillName"><span class="unit">tok/s</span></div>
+        <div class="row"><span class="cap" id="prefillName">prefill speed</span><input id="prefill" type="number" min="500" max="200000" step="500" aria-labelledby="prefillName"><span class="unit">tok/s</span></div>
         <input id="prefillRange" aria-label="prefill speed, as a slider" type="range" min="0" max="100" step="0.5">
       </div>
       <div class="ctl" title="Tokens per second while generating output: prose, chain of thought and tool-calls. Decode speed decays as the context grows, following the decay curve.">
-        <div class="row"><span class="cap" id="decodeName">decode speed</span><input id="decode" type="number" min="1" step="1" aria-labelledby="decodeName"><span class="unit">tok/s</span></div>
+        <div class="row"><span class="cap" id="decodeName">decode speed</span><input id="decode" type="number" min="1" max="600" step="1" aria-labelledby="decodeName"><span class="unit">tok/s</span></div>
         <input id="decodeRange" aria-label="decode speed, as a slider" type="range" min="0" max="100" step="0.5">
       </div>
       <div class="row" title="Cache prompt tokens between requests, so the engine does not have to re-process them on every turn. The cache is invalidated by a context compaction."><span class="cap" id="cacheName">prompt cache</span><input id="cache" type="checkbox" aria-labelledby="cacheName"><span class="unit"></span></div>
       <div class="gsub"
-           title="Waits the engine imposes outside the model's own work. At zero, the run is a pure throughput model.">contention</div>
-      <div class="row duo" title="Time it takes for the engine to start working on a request."><span class="cap" id="latencyName">request latency</span><input id="latency" type="number" min="0" step="50" aria-labelledby="latencyName"><span class="pm" aria-hidden="true">±</span><input id="jitter" type="number" min="0" step="50" aria-label="time variation in the request latency, in ms" title="Time variation in the request latency, introducing some randomness to the wait."><span class="unit">ms</span></div>
+           title="Waits the engine imposes outside the model's own work. With latency and spread both at zero, the run is a pure throughput model.">contention</div>
+      <div class="row duo" title="Time it takes for the engine to start working on a request."><span class="cap" id="latencyName">request latency</span><input id="latency" type="number" min="0" max="120000" step="50" aria-labelledby="latencyName"><span class="pm" aria-hidden="true">±</span><input id="jitter" type="number" min="0" max="60000" step="50" aria-label="time variation in the request latency, in ms" title="Time variation in the request latency, introducing some randomness to the wait."><span class="unit">ms</span></div>
       <div class="hint" id="engineHint" title="Time to first token: time it takes to get the first token returned by the engine."></div>
     </div>
 

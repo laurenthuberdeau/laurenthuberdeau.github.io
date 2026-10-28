@@ -95,7 +95,7 @@
      phase runs. Same encoding as the bands and the playhead, a third of the height,
      and unlike four fixed-minimum boxes it survives a narrow window. */
   .phasebar {
-    --c: var(--fg-dimmer); --frac: 0;
+    --c: var(--fg-dimmer);
     position: relative; flex: 0 0 auto; overflow: hidden; user-select: none;
     display: flex; align-items: baseline; gap: 10px;
     padding: 7px 12px; background: var(--bg-2); border-bottom: 1px solid var(--border);
@@ -136,13 +136,14 @@
     width: 372px; flex: 0 0 372px; border-left: 1px solid var(--border);
     background: var(--bg-2); overflow-y: auto; padding: 10px;
   }
-  body.no-panel .panel { display: none; }
   /* panel visibility lives on the root element so the head script can close it on a narrow
      window before first paint — a panel that shows and then vanishes is a flash */
   html.no-panel .panel { display: none; }
 
-  .msg { margin: 0 0 14px; opacity: 0; }
-  .msg.shown { opacity: 1; }
+  /* hidden until revealed, and visibility:hidden keeps the unrevealed session out of the
+     a11y tree and find-in-page while still reserving its layout height (which follow needs) */
+  .msg { margin: 0 0 14px; opacity: 0; visibility: hidden; }
+  .msg.shown { opacity: 1; visibility: visible; }
   .tag {
     font-size: 10px; letter-spacing: 1.3px; text-transform: uppercase; color: var(--fg-dimmer);
     margin-bottom: 3px; display: flex; gap: 8px; align-items: baseline;

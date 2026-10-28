@@ -180,9 +180,13 @@ ok('timeline monotonic', TL.reqs.every((r) => r.end >= r.decodeStart && r.decode
 ok('items in time order', TL.items.every((it, i) => i === 0 || (it.at ?? it.latencyStart) >= (TL.items[i - 1].at ?? TL.items[i - 1].end) - 1e-9));
 ok('every request prefills real context', TL.reqs.every((r) => r.ctx > 0 && r.prefillMs > 0));
 /* the flat-curve run is a control the panel no longer renders, but it is still the
-   only thing that proves the decay curve costs what the curve claims to cost */
-ok('decay curve costs time', !decayExpected || TL.duration > TL.flatDuration, TL.duration.toFixed(2) + 's vs flat ' + TL.flatDuration.toFixed(2) + 's');
-ok('flat run never slower', TL.flatDuration <= TL.duration + 1e-9);
+   only thing that proves the decay curve costs what the curve claims to cost. It is the
+   same run with every multiplier at 100, so prefill and decode collapse to divisions. */
+const flatDuration = (S.queueMs + S.toolMs + S.gapMs) / 1000
+                   + S.coldTokens / AS.config.prefill
+                   + S.outTokens / AS.config.decode;
+ok('decay curve costs time', !decayExpected || TL.duration > flatDuration, TL.duration.toFixed(2) + 's vs flat ' + flatDuration.toFixed(2) + 's');
+ok('flat run never slower', flatDuration <= TL.duration + 1e-9);
 ok('transcript rendered', $('#transcript').children.length === TL.items.length, TL.items.length + ' blocks');
 ok('request table rows rendered', $('#reqTable').children.length === TL.reqs.length + 1);
 ok('summary filled', $('#summary').children.length >= 20 && $('#summary').children.length % 2 === 0);
@@ -261,14 +265,29 @@ TR.scrollHeight = stackY;
 const maxTop = Math.max(0, stackY - PANE);
 const FOLLOW = [];
 for (const item of TL.items) {
-  const mid = item.kind === 'assistant' ? (item.decodeStart + item.end) / 2
-            : item.kind === 'tool' ? (item.from + item.at) / 2 : null;
-  if (mid === null || mid <= 0 || mid >= TL.duration || !item.el) continue;
-  AS.seek(mid); pump();
+  /* a whole block is sampled when it is revealed (its exec has ended), because a running
+     tool's result must not be scrolled into view while it is still hidden */
+  const at = item.kind === 'assistant' ? (item.decodeStart + item.end) / 2
+           : item.kind === 'tool' ? item.at : null;
+  if (at === null || at <= 0 || at >= TL.duration || !item.el) continue;
+  AS.seek(at); pump();
   const b = item.el.getBoundingClientRect();
   FOLLOW.push({ kind: item.kind, h: item.el._h, top: Math.round(b.top),
     bottom: Math.round(b.bottom), st: TR.scrollTop });
 }
+/* while a tool runs, the block that started it stays in view: the not-yet-revealed result
+   must not be followed, or the pane is left showing an invisible block for the exec */
+const EXEC = [];
+for (const item of TL.items) {
+  if (item.kind !== 'tool') continue;
+  const mid = (item.from + item.at) / 2;
+  if (mid <= 0 || mid >= TL.duration || !item.el) continue;
+  AS.seek(mid); pump();
+  EXEC.push({ top: Math.round(item.el.getBoundingClientRect().top) });
+}
+ok('a running tool does not scroll its hidden result into view',
+   EXEC.every((e) => e.top > TOP_INSET + 14),
+   EXEC.map((e) => e.top).join(' '));
 /* the pane cannot always place a block exactly where it wants — the last blocks have
    nothing below them to scroll past — so hitting the end of the scroll range counts */
 const atLimit = (f) => f.st >= maxTop - 1.5;
@@ -602,6 +621,12 @@ const beforeSwap = AS.tl.duration;
 $('#session').dispatch('change'); pump();
 ok('scenario change pauses playback', $('#play').textContent.indexOf('pause') === -1,
    'button reads ' + JSON.stringify($('#play').textContent));
+/* and any other session setting stops the clock the moment it changes, not a frame later */
+AS.seek(0); AS.play();
+const wasPlaying = $('#play').textContent.indexOf('pause') !== -1;
+$('#prefill').value = '50000'; $('#prefill').dispatch('input');
+ok('a settings change pauses playback', wasPlaying && $('#play').textContent.indexOf('pause') === -1,
+   'was playing ' + wasPlaying + ', button now ' + JSON.stringify($('#play').textContent));
 ok('scenario change loads the new corpus', AS.tl.session.id === 'greenfield' &&
    AS.tl.items[0].tokens === AS.tl.session.bootTokens &&
    $('#transcript').children.length === AS.tl.items.length,
@@ -666,7 +691,7 @@ const keepSession = AS.config.session;
 const corpusBad = [];
 for (const s of AS.sessions) {
   AS.config.session = s.id; AS.rebuild(); pump();
-  const T = AS.tl, P = AS.profileStats(s);
+  const T = AS.tl, P = T.stats;
   const cmp = T.items.filter((i) => i.compact);
   const why = [];
   if (!s.steps[0] || s.steps[0].role !== 'user') why.push('does not open with a user turn');
@@ -693,11 +718,6 @@ for (const s of AS.sessions) {
     if (cw.size < 20) why.push('trace at ' + i + ' has only ' + cw.size + ' content words');
   });
   if (P.peakCtx < (s.bootTokens || 0)) why.push('peak context below boot');
-  /* the split the summary quotes has to be the split the corpus measures */
-  const r = P.prefillMs / Math.max(1e-9, P.decodeMs);
-  if (!/^[\d.]+:1$/.test(s.split || '')) why.push('no measured phase split (got ' + s.split + ')');
-  else if (Math.abs(parseFloat(s.split) - r) > Math.max(0.06, r * 0.12))
-    why.push('split ' + s.split + ' but the corpus runs at ' + r.toFixed(2));
   /* model shape at the live settings, not just the corpus text */
   if (!T.reqs.every((r, i) => i === 0 || r.ctx >= T.reqs[i - 1].ctx
       || cmp.some((c) => c.at >= T.reqs[i - 1].end && c.at <= r.start))) why.push('context shrinks outside a compaction');
@@ -850,7 +870,8 @@ ok('the panel becomes a full view on narrow windows',
    would simply stop toggling in a browser and pass every test here. And on a narrow window
    it is decided before first paint, so opening the panel is never the page's first motion. */
 ok('the settings toggle is labelled and writes the class the CSS reads',
-   /id="panelToggle"[^>]*title="Toggle settings \(P\)">settings<\/button>/.test(html) &&
+   /id="panelToggle"[^>]*title="Toggle settings \(P\)"[^>]*>settings<\/button>/.test(html) &&
+     /id="panelToggle"[^>]*aria-expanded=/.test(html) &&
      /documentElement\.classList\.toggle\('no-panel'\)/.test(src) &&
      !/body\.classList\.toggle\('no-panel'\)/.test(src) &&
      /html\.no-panel \.panel \{ display: none/.test(STYLE) &&

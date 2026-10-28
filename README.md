@@ -182,14 +182,14 @@ shows every call it made.
 
 The **session summary is the first card in the
 panel**, because it is the thing you come back to after every settings change: it leads with
-`total` and `prefill : decode` — the split between the two faces of inference, `12:1` for
+`total` and `prefill : decode` — the split between the two faces of inference, `9.8:1` for
 `long-log`, `0.54:1` for `doc` — then the phases, the context, and what the prompt cache
 avoided. Three rows share one shape, `125k tok (2m 27s)`, so the card reads as columns:
 
 ```
 prefill             125k tok (2m 27s)
-prefill (cached)    283k tok (4m 37s)
-decode              325 tok (12.65s)
+prefill (cached)    284k tok (4m 37s)
+decode              426 tok (15.00s)
 ```
 
 The **requests history is the second card**, directly under the summary rather than at the far
@@ -199,18 +199,13 @@ re-render on every settings change, so they are read together without scrolling.
 `prefill` is what the engine had to ingest and `prefill (cached)` what it did not, sitting
 under the cost it answers rather than at the end of the card where it would be read long after
 the reader stopped looking at the prompt. The `(cached)` row belongs to the cache, so with the
-toggle off it is gone and `prefill` becomes the whole prompt — `409k tok (7m 4s)` for the same
+toggle off it is gone and `prefill` becomes the whole prompt — `409k tok (7m 5s)` for the same
 `long-log` run, the two rows above added back together. That is why the toggle does not get a
 row of its own any more: those rows show the state, where the old `prompt cache: on · instant
 reads` line only restated the switch above. Each row pairs its tokens with its time, so the two
 `avg` rows below are the division of two numbers you have just read, not another thing to
-remember. The split is measured from the timeline. When the live settings are off the default
-profile the row also quotes the corpus's own number at that profile, so the two cannot be
-confused — but only with the cache on, because that is the regime the corpus number was measured
-in. With the cache off the reference is dropped instead of carried across: `34:1` against a
-cached `12:1` would be two different engines wearing one label, and the hover note drops the
-quotation with the value, so the note never explains a number that is not on screen. Every row has a
-hover note — the cursor goes to `help` over the card — because the panel is where these
+remember. The split is measured from the timeline, so it always describes the run on screen.
+Every row has a hover note — the cursor goes to `help` over the card — because the panel is where these
 definitions live: which tokens each rate counts, what the cache does and does not make free, and
 why the phases need the turn gaps to add up to the clock. Then the panel holds the engine
 card — throughput, the prompt cache toggle, and contention (the request wait) as a group under
@@ -234,9 +229,11 @@ decode 1 token`, with its own note on the terms. After the engine card comes the
 the Link card closes the panel. In the requests history, the
 `prefilled` column shows how many prompt tokens that request actually had to ingest. Curve table cells commit
 when the field loses focus, or on `enter`; `escape` puts the old number back. Nothing plays
-itself unless it is asked to: the page loads parked, and switching
-scenario pauses and rewinds to zero rather than rolling straight into the new run, so
-`autoplay=1` governs the page load only.
+itself unless it is asked to: the page loads parked, and any change to a session setting —
+a speed, the cache, the latency, the curve, the scenario — pauses the clock immediately
+rather than leaving the run moving under the edit; switching scenario also rewinds to zero
+rather than rolling straight into the new run. Playback speed and the theme are not session
+settings in this sense and do not pause, so `autoplay=1` governs the page load only.
 
 The seek bar is the timeline drawn to scale rather than a progress fill: one band per phase
 run, in that phase's colour — queue white, prefill amber, decode green, tool
@@ -254,7 +251,7 @@ own duration.
 
 | parameter             | meaning                                             |
 |-----------------------|-----------------------------------------------------|
-| `session`             | any scenario id — `greenfield`, `bug-hunt`, `long-log`, `deep-fix`, `sweep`, `oncall`, `migration`, `refactor`, `doc`, `repro` |
+| `session`             | any scenario id — `greenfield`, `bug-hunt`, `long-log`, `deep-fix`, `sweep`, `oncall`, `migration`, `refactor`, `doc`, `repro`, `audit` |
 | `prefill`, `p`        | prefill speed in tok/s                               |
 | `decode`, `d`         | decode speed in tok/s, before the curve              |
 | `cache`, `c`          | prompt cache, `1` on (default) or `0` off            |
