@@ -18,6 +18,7 @@ every corpus must satisfy.
 |---|---|
 | `bootTokens` | system prompt + tool schemas + repo map; paid cold on the first request |
 | `step.text` | assistant prose length drives decode time; user/tool text drives context |
+| `step.cot` | reasoning trace: generated before the prose, at the decode rate, shown dim |
 | `step.tool.args` | tool-call args streamed through decode as a second segment |
 | `execMs` | tool wall time (the tool phase) |
 | `simTokens` | tool-result size that is counted in context without literal text (elided preview) |
@@ -39,6 +40,14 @@ Two conventions the corpus follows, because they are easier to state than to red
   way and stays decode-bound while doing it. Wrap-up messages are allowed to be long: the
   incident summary in `oncall` and the rollback plan in `migration` run to several hundred
   words each, because that is what those turns actually contain.
+- **chain of thought goes on the turns where reasoning is the work.** `cot` is a trace, not a
+  second copy of the answer: it hesitates, weighs two hypotheses, discards one. Put it on the
+  diagnostic and decision turns (`long-log` picking leak-vs-outlier, `deep-fix` reading the heap
+  curve, `bug-hunt` deciding whether the test or the pool is wrong) and leave the mechanical
+  turns — a `grep`, a `git diff`, a file read — without one, because a model that monologues
+  before every `ls` is not a thinking model, it is a slow one. A trace is billed like any other
+  generated token: it costs decode time and it stays in the prompt, so the price of adding one
+  is real and the corpus keeps them few.
 
 ## Design axes
 
@@ -54,12 +63,14 @@ already covers, not re-tread one.
 - **Cache interaction** — tiny fresh chunks (`sweep`, `doc`) vs. cache-busting events
   (compaction in `deep-fix`), vs. cold re-prefill of huge dumps (`long-log`, `repro`).
 - **Phase dominance** — read it off the summary's `prefill : decode` row: prefill-heavy
-  `long-log` 12:1, balanced `sweep` 1.2:1, decode-heavy `doc` 0.54:1, and tool-bound `migration`
-  where neither phase is the story at all. Contention is a slider, not a corpus, but per-request
-  latency is most visible on `sweep`, which has the most requests.
+  `long-log` 12:1, balanced `sweep` 1.2:1, decode-heavy `doc` 0.54:1, hidden-decode `audit`
+  0.25:1, and tool-bound `migration` where neither phase is the story at all. Contention is a
+  slider, not a corpus, but per-request latency is most visible on `sweep`, which has the most
+  requests.
 - **Turn texture** — search loops (`bug-hunt`, `sweep`), long monologues (`doc`, the closing
   turns of `migration` and `oncall`), tight edit cycles (`greenfield`, `refactor`), event-driven
-  ops work (`long-log`, `deep-fix`, `oncall`), and one slow evidence-driven debug (`repro`).
+  ops work (`long-log`, `deep-fix`, `oncall`), one slow evidence-driven debug (`repro`), and one
+  session where the tools are almost irrelevant and the reasoning is the work (`audit`).
 
 ## The phase split is measured, never declared
 
@@ -152,6 +163,18 @@ phase as tool args, ~800 tokens of document per request, against an 11ms prefill
 that follows them. 33s of decode against 18s of prefill, and the generated document stays in
 context as resident prefix — the next request does not re-ingest what the model itself wrote,
 which is the asymmetry the summary's `prefill : decode` row exists to make visible.
+
+### `audit` (thinking dominance)
+
+A weekly worker stall with no crash, no log line and no reproducer, so nothing a tool could run
+will answer the question and the work happens in the traces. Five turns generate ~1390 tokens of
+which ~1070 are reasoning — **77% of what the engine produces never reaches the transcript**, and
+the visible answers are one or two sentences each. The result is 32s of decode against 8s of
+prefill (0.25:1, the most decode-dominated split in the corpus) with under a second of tool exec.
+It is the scenario that makes the phase bar legible: the decode band runs for tens of seconds
+while the transcript looks idle, because the tokens being emitted are gray. Raising decode cuts
+the run from 43s to 13s at 900 tok/s; making prefill effectively free only cuts it to 35s, which
+is the `prefill : decode` row doing the thing it exists to do.
 
 ## Proposed / backlog
 

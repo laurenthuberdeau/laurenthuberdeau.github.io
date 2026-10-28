@@ -234,11 +234,20 @@ function buildTimeline() {
       const prefillDur = prefillSeconds(cached, ctx, pts, config.prefill);
       const decodeStart = prefillStart + prefillDur;
 
-      /* output = prose plus an optional streamed tool call, one token stream */
-      const segments = [{ kind: 'text', tokens: tokenize(step.text), from: 0 }];
+      /* output = reasoning, then prose, then an optional streamed tool call, one token
+         stream. Chain of thought is generated at the decode rate like any other token and
+         stays in the history afterwards — harnesses that echo thinking blocks back on tool
+         turns pay for them again on every later request, so they are counted here rather
+         than waved away as free. It is not a phase: it is decode, just not output the user
+         is being shown yet. */
+      const segments = [];
+      let at = 0;
+      const add = (seg) => { segments.push(Object.assign(seg, { from: at })); at += seg.tokens.length; };
+      if (step.cot) add({ kind: 'cot', tokens: tokenize(step.cot) });
+      add({ kind: 'text', tokens: tokenize(step.text) });
       if (step.tool) {
-        segments.push({ kind: 'tool', name: step.tool.name, args: step.tool.args,
-                        tokens: tokenize(step.tool.args), from: segments[0].tokens.length });
+        add({ kind: 'tool', name: step.tool.name, args: step.tool.args,
+              tokens: tokenize(step.tool.args) });
       }
       const all = [];
       for (const s of segments) for (const tk of s.tokens) all.push(tk);
@@ -388,6 +397,11 @@ function renderDOM() {
         let box, tokHost;
         if (s.kind === 'text') {
           box = el('div', 'body');
+          tokHost = box;
+        } else if (s.kind === 'cot') {
+          /* same stream, same cursor, no emphasis: the reasoning is shown because the harness
+             surfaces it, not because it is part of the answer */
+          box = el('div', 'body cot');
           tokHost = box;
         } else {
           box = el('div', 'toolcall');

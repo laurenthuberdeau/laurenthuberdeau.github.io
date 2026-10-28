@@ -308,6 +308,73 @@ ok('a tool call appears with its first token and not before',
    CALLS.length + ' calls sampled; one visible 50ms early = ' +
    CALLS.some((c) => c.before !== 'none') + ', none return on rewind = ' +
    CALLS.every((c) => c.afterRewind === 'none'));
+/* --- chain of thought ---
+   Three things the model is not free to change silently. The trace is generated *before* the
+   answer it produced, so a replay that shows the conclusion first spoils the reasoning. It is
+   decode-phase output rather than its own phase, so it must never grow a band of its own on the
+   bar. And it is billed: reasoning tokens are generated tokens, so they occupy the prompt on
+   every later turn and they delay the first token the human is shown. */
+const COT = [];
+for (const item of TL.items) {
+  if (item.kind !== 'assistant' || !item.segs) continue;
+  const traces = item.segments.filter((s) => s.kind === 'cot');
+  if (!traces.length) continue;
+  const boxes = item.segs.filter((s) => s.seg.kind === 'cot');
+  const said = () => boxes.map((s) => s.tokEl.textContent).join('');
+  const traceEnd = Math.max(...traces.map((s) => s.from + s.tokens.length));
+  const firstSpoken = Math.min(...item.segments.filter((s) => s.kind !== 'cot').map((s) => s.from));
+  AS.seek(item.decodeStart); pump();
+  const atDecodeStart = said();
+  AS.seek(item.times[traces[0].from]); pump();
+  const atFirstToken = said();
+  AS.seek(0); pump();
+  const afterRewind = said();
+  COT.push({
+    toks: traceEnd,
+    /* the answer starts where the reasoning stops, and both sit inside decode */
+    ordered: firstSpoken >= traceEnd,
+    inDecode: item.times[traces[0].from] >= item.decodeStart - 1e-9 &&
+              item.times[traceEnd - 1] <= item.end + 1e-9,
+    delays: item.times[firstSpoken] >= item.times[traceEnd - 1],
+    billed: item.req.out === item.tokens.length && item.tokens.length >= traceEnd,
+    dimmed: boxes.length > 0 && boxes.every((s) => /(^|\s)cot(\s|$)/.test(String(s.node.className))),
+    atDecodeStart, atFirstToken, afterRewind
+  });
+}
+const COT_TOKS = COT.reduce((a, c) => a + c.toks, 0);
+ok('chain of thought streams before the answer it produced',
+   COT.length === 0 || (COT.every((c) => c.ordered && c.inDecode && c.delays) &&
+     COT.every((c) => c.atDecodeStart === '' && c.atFirstToken.trim() !== '' && c.afterRewind === '')),
+   COT.length + ' traces (' + COT_TOKS + ' tok) sampled at its request decode start, its first token and on rewind');
+ok('chain of thought is decode-phase work, not a phase of its own',
+   SEG.every((s) => s.phase !== 'cot' && s.phase !== 'think' && s.phase !== 'reason') &&
+   !seen.has('cot') && !seen.has('think') && !seen.has('reason'),
+   'phases seen: ' + [...seen].join(' '));
+ok('chain of thought is billed as generated output',
+   COT.length === 0 || (COT.every((c) => c.billed && c.dimmed) && S.outTokens >= COT_TOKS),
+   S.outTokens + ' decode tokens include ' + COT_TOKS + ' reasoning tokens');
+/* strip the traces from the corpus and rebuild: the run must get shorter (they are generated at
+   the decode rate) AND the prompt must get smaller (a harness that echoes thinking blocks back
+   keeps them in history). If the trace were free the duration would be unchanged; if it were
+   dropped after its turn the peak would be unchanged. */
+if (COT.length) {
+  const ses = AS.tl.session, saved = ses.steps;
+  ses.steps = saved.map((s) => {
+    const { cot, ...rest } = s;
+    return rest;
+  });
+  AS.rebuild(); pump();
+  const bare = { dur: AS.tl.duration, out: AS.tl.stats.outTokens, peak: AS.tl.stats.peakCtx };
+  ses.steps = saved;
+  AS.rebuild(); pump();
+  ok('reasoning costs decode time and stays in the prompt',
+     bare.dur < TL.duration - 1e-9 && bare.peak < TL.stats.peakCtx - 1e-9 && bare.out < TL.stats.outTokens,
+     TL.duration.toFixed(1) + 's → ' + bare.dur.toFixed(1) + 's, peak '
+       + Math.round(TL.stats.peakCtx) + ' → ' + Math.round(bare.peak) + ', out '
+       + TL.stats.outTokens + ' → ' + bare.out);
+  ok('the corpus survives the strip', Math.abs(AS.tl.duration - TL.duration) < 1e-6 &&
+     AS.tl.stats.outTokens === TL.stats.outTokens, 'restored ' + AS.tl.duration.toFixed(1) + 's');
+}
 const gapSecs = SEG.filter((s) => s.phase === 'gap').reduce((a, s) => a + s.to - s.from, 0);
 ok('unlabelled bands are exactly the summary gaps', Math.abs(gapSecs * 1000 - S.gapMs) <= 1e-6,
    gapSecs.toFixed(2) + 's of ' + SEG.length + ' bands');
@@ -366,6 +433,18 @@ ok('phase colours stay distinguishable', palettes.every((p) => {
    const c = PHASE_VARS.map((v) => hexOf(p, v));
    return c.every(Boolean) && new Set(c).size === c.length;
 }));
+/* the trace is dim in the stylesheet, not in JS, and the shim applies no CSS: a .body.cot rule
+   that goes missing leaves the reasoning the same colour as the answer it produced, which reads
+   as the model blurting its draft and is invisible to every check above. Both themes need it — a
+   grey that only exists in the dark palette is white-on-white in the light one. */
+const COT_RULE = (STYLE.match(/\.body\.cot \{([^}]*)\}/) || [, ''])[1];
+const COT_VAR = (COT_RULE.match(/color:\s*var\((--[\w-]+)\)/) || [, , ''])[1];
+ok('chain of thought is dimmer than the answer it produced',
+   !!COT_RULE && !!COT_VAR && palettes.every((p) => {
+     const c = hexOf(p, COT_VAR), fg = hexOf(p, '--fg');
+     return !!c && !!fg && c !== fg;
+   }),
+   '.body.cot { color: var(' + (COT_VAR || 'missing') + ') } in both themes');
 const rates = TL.reqs.map((r) => r.avgDecode);
 const fmt = (n) => (n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n));
 /* the shallow 'gentle' preset slows decode by ~18% (49 -> 40 tok/s) on the long
@@ -567,6 +646,15 @@ ok('config survived handler battery', AS.config.prefill > 0 && AS.config.decode 
    satisfy: role shape, enough requests to be a session, context that only ever
    shrinks at a compaction, and a name whose phase split matches the corpus data. */
 const ROLES = new Set(['user', 'assistant', 'tool', 'compact']);
+/* A reasoning trace has to earn its tokens. Content words shared with the following answer are
+   expected — a trace about drain() will say drain — but a trace that shares half its vocabulary
+   with its own conclusion is a paraphrase of the answer, not the reasoning that reached it, and
+   the transcript then reads as the model saying one thing twice at two volumes. The bar sits well
+   above the worst legitimate pair in the corpus (0.27, shared subject nouns) and at the level of
+   an actual restatement (a scrapped draft trace measured 0.53). */
+const COT_STOP = new Set('a an the and or but if so of to in on for with that this it is are was be not do does did i my we our they their you your as at by from into than then about before after first also just which while what when there them being'.split(' '));
+const cotWords = (t) => new Set(String(t).toLowerCase().replace(/[^a-z0-9 ]/g, ' ').split(/\s+/)
+  .filter((w) => w.length > 3 && !COT_STOP.has(w)));
 const keepSession = AS.config.session;
 const corpusBad = [];
 for (const s of AS.sessions) {
@@ -586,6 +674,17 @@ for (const s of AS.sessions) {
     else if (x.name !== prev.tool.name) why.push('tool at ' + i + ' is ' + x.name + ' but the call was ' + prev.tool.name);
   });
   if (P.requests < 3) why.push('only ' + P.requests + ' requests');
+  /* chain of thought quality, per turn: the trace must differ in substance from the answer it
+     produced, and a one-line trace is a hedge rather than reasoning worth the decode seconds */
+  s.steps.forEach((x, i) => {
+    if (x.role !== 'assistant' || !x.cot) return;
+    const cw = cotWords(x.cot), aw = cotWords(x.text);
+    let shared = 0;
+    cw.forEach((w) => { if (aw.has(w)) shared++; });
+    const frac = shared / Math.max(1, cw.size);
+    if (frac > 0.45) why.push('trace at ' + i + ' restates its answer (' + Math.round(frac * 100) + '% of its words are in it)');
+    if (cw.size < 20) why.push('trace at ' + i + ' has only ' + cw.size + ' content words');
+  });
   if (P.peakCtx < (s.bootTokens || 0)) why.push('peak context below boot');
   /* the split the summary quotes has to be the split the corpus measures */
   const r = P.prefillMs / Math.max(1e-9, P.decodeMs);
@@ -844,6 +943,13 @@ ok('the corpus reference is quoted only in the regime it was measured in',
 console.log('\nstats: ' + JSON.stringify(S, (k, v) => (typeof v === 'number' ? +v.toFixed(1) : v)));
 console.log('ledger:');
 for (const r of TL.reqs) console.log('  #' + r.no + ' ctx=' + r.ctx + ' queue=' + Math.round(r.queueMs) + 'ms prefill=' + Math.round(r.prefillMs) + 'ms avg=' + r.avgDecode.toFixed(1) + 't/s out=' + r.out);
+/* the reason a check failed has to reach the terminal: a corpus rejection pushes its invariant
+   into errors, and a summary that only counts them leaves whoever runs this guessing which rule
+   broke and hunting the corpus for it */
+if (errors.length) {
+  console.log('\nwhy:');
+  for (const e of errors) console.log('  ! ' + e);
+}
 console.log('\n' + (checks - failed) + '/' + checks + ' checks passed' +
   (errors.length ? ', ' + errors.length + ' runtime errors' : ''));
 process.exit(errors.length || failed ? 1 : 0);
