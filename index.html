@@ -283,19 +283,26 @@
     grid-template-columns: 1fr 1fr; gap: 8px; align-content: start;
   }
   .scenario {
-    border: 1px solid var(--border); border-radius: 8px; background: var(--bg-2);
-    padding: 10px 12px; cursor: pointer;
+    position: relative; border: 1px solid var(--border); border-radius: 8px;
+    background: var(--bg-2); padding: 10px 12px; cursor: pointer;
   }
-  .scenario:hover { border-color: var(--accent); }
+  .scenario:hover { border-color: var(--fg-dim); }
   .scenario:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  /* the selected scenario keeps a subtle accent border for the keyboard-visible state, but
+     the load state is signalled by a checkmark in the top corner — the clearest cue, one a
+     border can read the same as hover */
   .scenario.current { border-color: var(--accent); background: var(--panel-2); }
-  .scenario.current .sAct { color: var(--accent); }
+  .scenario.current:hover { border-color: var(--accent); }
+  .check {
+    position: absolute; top: 8px; right: 10px; color: var(--accent);
+    font-size: 16px; line-height: 1; font-weight: 700; opacity: 0;
+    pointer-events: none;
+  }
+  .scenario.current .check { opacity: 1; }
   .scenarioHead { display: flex; flex-direction: column; gap: 3px; }
-  .sName { font-weight: 700; font-size: 12px; line-height: 1.25; }
+  .sName { font-weight: 700; font-size: 12px; line-height: 1.25; padding-right: 18px; }
   .sMeta { color: var(--fg-dim); font-size: 10px; font-variant-numeric: tabular-nums; }
   .sAbout { color: var(--fg-dim); font-size: 11px; line-height: 1.4; margin-top: 6px; }
-  .sAct { margin-top: 8px; font-size: 10px; letter-spacing: 1px; text-transform: uppercase;
-         color: var(--fg-dimmer); }
   @media (max-width: 900px) {
     /* On a narrow window the panel is a view, not a sidebar. Stacked under the session it
      started a screen below the phase bar and both halves were too short to read, so the two
@@ -411,7 +418,7 @@
      aria-labelledby="scenarioPickerTitle" tabindex="-1" hidden>
   <header class="pickHead">
     <h2 id="scenarioPickerTitle">Choose a session</h2>
-    <span class="pickSub">each measured at your current settings — the ratio is in : out</span>
+    <span class="pickSub">each measured at your current settings</span>
     <button id="pickClose" class="primary" title="Close (Esc)">✕ close</button>
   </header>
   <div class="pickList" id="scenarioList"></div>
@@ -2028,7 +2035,15 @@ function scenarioStats(id) {
   config.session = id;
   const tl = buildTimeline();
   config.session = saved;
-  return { split: pfDk(tl.stats.prefillMs, tl.stats.decodeMs), total: tl.duration };
+  return { in: tl.stats.prefillMs, out: tl.stats.decodeMs, total: tl.duration };
+}
+/* the picker shows the split as “in : out” (prefill : decode), normalised so that decode
+   reads as 1 and prefill is its ratio against it — the same precision pfDk uses, but the
+   numbers carry their labels instead of the labels staring back from the string */
+function ratioLabel(prefillMs, decodeMs) {
+  const r = prefillMs / Math.max(1e-9, decodeMs);
+  const n = r >= 10 ? r.toFixed(0) : r >= 1 ? r.toFixed(1) : r.toFixed(2);
+  return n + ' in : 1 out';
 }
 
 const pickBtn = $('#pickSession');
@@ -2055,18 +2070,22 @@ function buildPicker() {
     const ref = scenarioStats(s.id);
     const row = el('div', 'scenario');
     row.dataset.id = s.id;
+    const selected = s.id === config.session;
     row.setAttribute('role', 'option');
-    row.setAttribute('aria-selected', String(s.id === config.session));
+    row.setAttribute('aria-selected', String(selected));
+    row.classList.toggle('current', selected);
     row.tabIndex = 0;
+    /* a checkmark badge sits in the top corner, shown only on the selected scenario */
+    const check = el('span', 'check', '✓');
+    check.setAttribute('aria-hidden', 'true');
+    row.appendChild(check);
     const head = el('div', 'scenarioHead');
     head.appendChild(el('span', 'sName', s.name));
     const meta = el('span', 'sMeta',
-      ref.split + ' in : out · ' + fmtDur(ref.total) + ' · ' + s.steps.filter(x => x.role === 'assistant').length + ' turns');
+      ratioLabel(ref.in, ref.out) + ' · ' + fmtDur(ref.total) + ' · ' + s.steps.filter(x => x.role === 'assistant').length + ' turns');
     head.appendChild(meta);
     row.appendChild(head);
     if (s.about) row.appendChild(el('div', 'sAbout', s.about));
-    const act = el('div', 'sAct', s.id === config.session ? 'loaded' : 'load →');
-    row.appendChild(act);
     row.addEventListener('click', () => selectScenario(s.id));
     row.addEventListener('keydown', (e) => {
       if (e.key === 'Enter' || e.code === 'Space') { e.preventDefault(); selectScenario(s.id); }

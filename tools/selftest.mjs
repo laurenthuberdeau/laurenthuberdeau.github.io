@@ -42,6 +42,10 @@ class El {
     return this.children.length ? this.children.map((c) => c.textContent).join('') : this._text;
   }
   set textContent(v) { this._text = String(v); this.children = []; }
+  /* the picker rebuilds its list by clearing a container then appending fresh rows, so the
+     shim must honour innerHTML = '' the way a browser does (discard children) rather than
+     leaving stale rows behind */
+  set innerHTML(v) { if (v === '') this.children = []; }
   get className() { return [...this._cls].join(' '); }
   set className(v) { this._cls = new Set(String(v).split(/\s+/).filter(Boolean)); }
   descendants() { const out = []; const walk = (n) => n.children.forEach((c) => { out.push(c); walk(c); }); walk(this); return out; }
@@ -633,7 +637,7 @@ ok('picker lists every scenario', rowCount && selectThrough,
    must measure every scenario and must be live: tweak decode speed and the figure should move. */
 const measureAll = AS.sessions.every((s) => {
   const r = AS.scenarioStats(s.id);
-  return r && typeof r.total === 'number' && r.total > 0 && /: 1\s*$/.test(r.split);
+  return r && typeof r.total === 'number' && r.total > 0 && typeof r.in === 'number' && typeof r.out === 'number';
 });
 const totalBefore = AS.scenarioStats('long-log').total;
 const decodeSaved = AS.config.decode;
@@ -642,7 +646,8 @@ const totalAfter = AS.scenarioStats('long-log').total;
 AS.config.decode = decodeSaved;
 const live = totalAfter !== totalBefore;
 ok('picker stats measure every session at current settings', measureAll && live,
-   'doc=' + AS.scenarioStats('doc').split + ' · audit=' + AS.scenarioStats('audit').split
+   'doc=' + AS.scenarioStats('doc').in + '/' + AS.scenarioStats('doc').out
+     + ' · audit=' + AS.scenarioStats('audit').in + '/' + AS.scenarioStats('audit').out
      + ' · long-log tracks decode: ' + totalBefore.toFixed(1) + 's -> ' + totalAfter.toFixed(1) + 's');
 /* the pop-up's job is to make the choice informed: each row must carry the session's fuller
    description plus the split and wall time measured at the current engine settings, and the
@@ -652,10 +657,22 @@ const firstRow = $('#scenarioList').children[0];
 const rowText = firstRow.textContent;
 const listShown = !$('#scenarioPicker').hidden && !$('#scenarioBackdrop').hidden;
 const hasAbout = AS.sessions.every((s) => s.about && s.about.trim().length > 40);
-const hasStats = /in\s*:\s*out/.test(rowText) && /turns/.test(rowText);
+const hasStats = /in\s*:\s*[.\d]+ out/.test(rowText) && /turns/.test(rowText);
 ok('picker pop-up opens and describes', listShown && hasAbout && hasStats,
    'open=' + listShown + ' · descriptions=' + hasAbout + ' · stats=' + hasStats
      + ' → "' + (rowText || '').slice(0, 70) + '"');
+/* the currently loaded scenario is the one visibly marked: exactly one row carries the
+   `current` class and its checkmark badge, and it is the row for the active session */
+const rows = [...$('#scenarioList').children];
+const curRows = rows.filter((r) => r.classList.contains('current'));
+const checkGated = rows.every((r) => {
+  const hasCheck = (r.children[0] || {}).tagName === 'SPAN' && (r.children[0]._text || '') === '✓';
+  return r.classList.contains('current') ? hasCheck : true;
+});
+const selOk = curRows.length === 1 && curRows[0].dataset.id === AS.config.session && checkGated;
+ok('picker marks the loaded scenario with the checkmark', selOk,
+   curRows.length + ' current row(s) · marked=' + (curRows[0] || {}).dataset.id
+     + ' · active=' + AS.config.session);
 AS.closePicker(); pump();
 ok('picker pop-up closes', $('#scenarioPicker').hidden && $('#scenarioBackdrop').hidden);
 AS.selectSession('greenfield'); pump();

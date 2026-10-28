@@ -1232,7 +1232,15 @@ function scenarioStats(id) {
   config.session = id;
   const tl = buildTimeline();
   config.session = saved;
-  return { split: pfDk(tl.stats.prefillMs, tl.stats.decodeMs), total: tl.duration };
+  return { in: tl.stats.prefillMs, out: tl.stats.decodeMs, total: tl.duration };
+}
+/* the picker shows the split as “in : out” (prefill : decode), normalised so that decode
+   reads as 1 and prefill is its ratio against it — the same precision pfDk uses, but the
+   numbers carry their labels instead of the labels staring back from the string */
+function ratioLabel(prefillMs, decodeMs) {
+  const r = prefillMs / Math.max(1e-9, decodeMs);
+  const n = r >= 10 ? r.toFixed(0) : r >= 1 ? r.toFixed(1) : r.toFixed(2);
+  return n + ' in : 1 out';
 }
 
 const pickBtn = $('#pickSession');
@@ -1259,18 +1267,22 @@ function buildPicker() {
     const ref = scenarioStats(s.id);
     const row = el('div', 'scenario');
     row.dataset.id = s.id;
+    const selected = s.id === config.session;
     row.setAttribute('role', 'option');
-    row.setAttribute('aria-selected', String(s.id === config.session));
+    row.setAttribute('aria-selected', String(selected));
+    row.classList.toggle('current', selected);
     row.tabIndex = 0;
+    /* a checkmark badge sits in the top corner, shown only on the selected scenario */
+    const check = el('span', 'check', '✓');
+    check.setAttribute('aria-hidden', 'true');
+    row.appendChild(check);
     const head = el('div', 'scenarioHead');
     head.appendChild(el('span', 'sName', s.name));
     const meta = el('span', 'sMeta',
-      ref.split + ' in : out · ' + fmtDur(ref.total) + ' · ' + s.steps.filter(x => x.role === 'assistant').length + ' turns');
+      ratioLabel(ref.in, ref.out) + ' · ' + fmtDur(ref.total) + ' · ' + s.steps.filter(x => x.role === 'assistant').length + ' turns');
     head.appendChild(meta);
     row.appendChild(head);
     if (s.about) row.appendChild(el('div', 'sAbout', s.about));
-    const act = el('div', 'sAct', s.id === config.session ? 'loaded' : 'load →');
-    row.appendChild(act);
     row.addEventListener('click', () => selectScenario(s.id));
     row.addEventListener('keydown', (e) => {
       if (e.key === 'Enter' || e.code === 'Space') { e.preventDefault(); selectScenario(s.id); }

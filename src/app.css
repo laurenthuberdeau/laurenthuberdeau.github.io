@@ -274,19 +274,26 @@
     grid-template-columns: 1fr 1fr; gap: 8px; align-content: start;
   }
   .scenario {
-    border: 1px solid var(--border); border-radius: 8px; background: var(--bg-2);
-    padding: 10px 12px; cursor: pointer;
+    position: relative; border: 1px solid var(--border); border-radius: 8px;
+    background: var(--bg-2); padding: 10px 12px; cursor: pointer;
   }
-  .scenario:hover { border-color: var(--accent); }
+  .scenario:hover { border-color: var(--fg-dim); }
   .scenario:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  /* the selected scenario keeps a subtle accent border for the keyboard-visible state, but
+     the load state is signalled by a checkmark in the top corner — the clearest cue, one a
+     border can read the same as hover */
   .scenario.current { border-color: var(--accent); background: var(--panel-2); }
-  .scenario.current .sAct { color: var(--accent); }
+  .scenario.current:hover { border-color: var(--accent); }
+  .check {
+    position: absolute; top: 8px; right: 10px; color: var(--accent);
+    font-size: 16px; line-height: 1; font-weight: 700; opacity: 0;
+    pointer-events: none;
+  }
+  .scenario.current .check { opacity: 1; }
   .scenarioHead { display: flex; flex-direction: column; gap: 3px; }
-  .sName { font-weight: 700; font-size: 12px; line-height: 1.25; }
+  .sName { font-weight: 700; font-size: 12px; line-height: 1.25; padding-right: 18px; }
   .sMeta { color: var(--fg-dim); font-size: 10px; font-variant-numeric: tabular-nums; }
   .sAbout { color: var(--fg-dim); font-size: 11px; line-height: 1.4; margin-top: 6px; }
-  .sAct { margin-top: 8px; font-size: 10px; letter-spacing: 1px; text-transform: uppercase;
-         color: var(--fg-dimmer); }
   @media (max-width: 900px) {
     /* On a narrow window the panel is a view, not a sidebar. Stacked under the session it
      started a screen below the phase bar and both halves were too short to read, so the two
