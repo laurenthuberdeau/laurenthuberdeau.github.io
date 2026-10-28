@@ -4,7 +4,8 @@ The simulator's scenarios are pure data: each is an entry in the `SESSIONS` arra
 `src/scenarios.js` with a `bootTokens` count and an ordered list of `steps`. The model (prefill /
 decode / cache / curve / contention) is the same for every scenario — a corpus exists to give
 *shape* to that model, and each scenario is designed to exercise a different shape. Adding a
-scenario requires zero code changes: the dropdown, the `session=` URL parameter, the ledger and
+scenario requires zero code changes: the dropdown, the `session=` URL parameter, the requests
+history and
 the summary all pick it up automatically, including the phase split, which is measured from the
 corpus rather than declared in it. The selftest walks the whole corpus and keeps a few generic
 invariants (opens on a user turn and closes on a tool-free assistant turn, every tool result
@@ -98,7 +99,7 @@ that scenario at the default profile, not a label anyone maintains by hand.
 | `greenfield` | greenfield · small context | 6.2k | 4 | 3 | 1.0:1 | small, clean feature work | baseline prefill/decode; tiny context; cache near-irrelevant |
 | `bug-hunt` | bug hunt · medium context | 9.4k | 5 | 4 | 2.0:1 | gradual growth, mixed tools | fault-finding arc; ordering bug; medium decay |
 | `long-log` | long log · context blowout | 11.8k | 6 | 5 | 12:1 | blowout to ~126k | curve grind; cache headline (175s vs 452s cold) |
-| `deep-fix` | deep fix · harness compaction | 12.0k | 5 | 4 + 1 compact | 6.9:1 | spike to ~69k, compaction mid-run | compaction busts the prefix cache; re-prefill is flagged in the ledger |
+| `deep-fix` | deep fix · harness compaction | 12.0k | 5 | 4 + 1 compact | 6.9:1 | spike to ~69k, compaction mid-run | compaction busts the prefix cache; re-prefill is flagged in the history |
 | `sweep` | batch edits · cache showcase | 5.4k | 7 | 6 | 1.2:1 | fourteen steps, mostly tiny diffs, peak ~33k | a codemod plus hand fixes; four of the seven requests prefill under 60 ms; 88s of prefill avoided |
 | `oncall` | production incident · context spike | 9.8k | 5 | 4 | 2.7:1 | one 84k dump, then tightening turns, peak ~97k | a *sharp* single-prefill spike landing on the `cliff` drop at 96k–100k; no gradual buildup |
 | `migration` | backfill · tool-bound | 8.1k | 5 | 4 | 0.80:1 | four turns, `execMs` 31s–240s, peak ~22k | the tool phase dominating wall time, 411s of it, ~7 minutes of one index build |
@@ -112,7 +113,7 @@ that scenario at the default profile, not a label anyone maintains by hand.
 a 26k log dump and a 31k source read push context to ~69k — then the harness compacts:
 
 - context drops 69k → 18k (boot 12k + 6.3k summary),
-- the ledger flags the request after the compact (`↻` + red bar, `re-prefill · 6.3k (cache invalidated)`),
+- the history flags the request after the compact (`↻` + red bar, `re-prefill · 6.3k (cache invalidated)`),
 - the transcript states the cost (`only 12k boot cached · next request re-prefills 6.3k cold`),
 - summary shows `peak context 69k tok` above `harness compactions 1×`, with `final context`
   30k below them — the drop and the rebuild in one glance.
@@ -125,7 +126,7 @@ to 45s (compaction destroys the prefix). That two-sided trade-off is the point.
 
 A public-API rename: a wide grep, a codemod that prints what it skipped, hand fixes for the
 test doubles, one full test run, one doc-snippet fix, one re-run. Everything after the grep is
-a fresh chunk of tens of tokens, so the ledger reads `30 ms`, `53 ms`, `27 ms`, `24 ms` in the
+a fresh chunk of tens of tokens, so the history reads `30 ms`, `53 ms`, `27 ms`, `24 ms` in the
 prefill column while the same prompts would cost 30–45s cold — 88s of prefill never paid, on a
 run that is only 65s long. The 18k test-run output is the one turn that breaks the pattern and
 lands as 15.5s, which is what makes the other four legible: the cache is not free, it is

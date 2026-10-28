@@ -188,6 +188,10 @@ prefill (cached)    283k tok (4m 37s)
 decode              325 tok (12.65s)
 ```
 
+The **requests history is the second card**, directly under the summary rather than at the far
+end of the panel: its rows are the per-request detail behind those totals, and both cards
+re-render on every settings change, so they are read together without scrolling.
+
 `prefill` is what the engine had to ingest and `prefill (cached)` what it did not, sitting
 under the cost it answers rather than at the end of the card where it would be read long after
 the reader stopped looking at the prompt. The `(cached)` row belongs to the cache, so with the
@@ -222,9 +226,9 @@ grows" — and the two are deliberately free to phrase things differently. One d
 mechanism for the whole page — native, on
 hover, `help` cursor to say it is there — rather than a bubble of the page's own that only half
 the surface uses. The line under the controls stays what it always was: `TTFT ≈ queue + prefill +
-decode 1 token`, with its own note on the terms. After the engine card come the decay curve and a
-per-request ledger whose
-`prefilled` column shows how much of each prompt was actually ingested. Curve table cells commit
+decode 1 token`, with its own note on the terms. After the engine card comes the decay curve, and
+the Link card closes the panel. In the requests history, the
+`prefilled` column shows how many prompt tokens that request actually had to ingest. Curve table cells commit
 when the field loses focus, or on `enter`; `escape` puts the old number back. Switching
 scenario pauses and rewinds to zero rather than rolling straight into the new run, so
 `autoplay` governs the page load only.
@@ -296,7 +300,8 @@ After the handlers it walks the whole corpus, not just the scenario the URL pick
 every entry to the same shape: it opens on a user turn and closes on a tool-free assistant
 turn, every tool result answers a call that named that tool, there are at least three
 requests, context never shrinks except at a compaction, and the phase split the summary quotes
-is the split the corpus measures. It also pins the panel: the summary is the first card, its
+is the split the corpus measures. It also pins the panel: the summary is the first card, the
+requests history follows it above the controls, its
 first two rows are `total` and `prefill : decode`, its phase rows pair tokens with time, every
 row carries a hover note, and a row that describes a setting only appears while that setting is
 on — which also means the checks restore the URL profile before reading the markup, so they

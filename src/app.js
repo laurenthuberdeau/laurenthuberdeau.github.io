@@ -196,7 +196,7 @@ function buildTimeline() {
   const session = SESSIONS.find(s => s.id === config.session) || SESSIONS[0];
   const pts = config.curve;
   /* the parameter vector this timeline was built from. Every downstream read
-     (phase bar, ledger, summary, boot banner) goes through TL.params, so a deferred
+     (phase bar, request table, summary, boot banner) goes through TL.params, so a deferred
      rebuild (rAF-coalesced during drags/typing) can never render live settings
      against an older timeline. The curve is copied: the editor mutates
      config.curve in place. */
@@ -465,11 +465,11 @@ function renderDOM() {
     }
     transcript.appendChild(item.el);
   }
-  buildLedger();
+  buildReqTable();
 }
 
-function buildLedger() {
-  const tbl = $('#ledger');
+function buildReqTable() {
+  const tbl = $('#reqTable');
   tbl.textContent = '';
   const head = document.createElement('tr');
   ['#', 'ctx in', 'prefilled', 'queue', 'prefill', 'decode', 'out'].forEach(h => head.appendChild(el('th', null, h)));
@@ -713,14 +713,15 @@ function render(t) {
     td[2].textContent = t >= r.start
       ? (r.afterCompact
         ? 're-prefill · ' + fmtTok(r.cold) + (TL.params.cache ? ' (cache invalidated)' : '')
-        : fmtTok(r.cold) + (r.cached ? ' of ' + fmtTok(r.ctx) : ''))
+        : fmtTok(r.cold))
       : '';
     td[3].textContent = t >= r.start ? fmtDur(r.queueMs / 1000) : '';
     td[4].textContent = t >= r.start + r.queueMs / 1000 ? fmtDur(r.prefillMs / 1000) : '';
     if (t >= r.decodeStart) {
-      /* show the request's own measured decode rate; the elapsed-time division
-         would decay to 0 as later steps proceed and spike at decode start */
-      td[5].textContent = r.avgDecode.toFixed(0) + ' t/s';
+      /* decode is a duration column like queue and prefill beside it, so it shows the time the
+         request spent generating rather than the rate it generated at — that rate is already
+         the summary's `avg decode`, and the out column is what ticks during the phase */
+      td[5].textContent = fmtDur(r.end - r.decodeStart);
       const n = Math.max(1, countTokens(item.times, t));
       td[6].textContent = n + '/' + r.out;
     } else { td[5].textContent = ''; td[6].textContent = ''; }

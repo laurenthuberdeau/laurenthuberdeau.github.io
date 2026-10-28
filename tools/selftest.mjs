@@ -164,7 +164,7 @@ const decayExpected = S.peakCtx > 60000 && !isFlat() && AS.config.decode * Math.
 
 ok('boot produced timeline', TL.duration > 0.5, 'duration=' + TL.duration.toFixed(2) + 's');
 ok('requests modeled', S.requests >= 3, S.requests + ' requests');
-ok('ledger rows == requests', TL.reqs.every((r) => r.row));
+ok('request table rows == requests', TL.reqs.every((r) => r.row));
 /* context only ever shrinks at harness compaction steps, never between them */
 const compacts = TL.items.filter((i) => i.compact);
 ok('context monotonic', TL.reqs.every((r, i) => i === 0 || r.ctx >= TL.reqs[i - 1].ctx
@@ -177,7 +177,7 @@ ok('every request prefills real context', TL.reqs.every((r) => r.ctx > 0 && r.pr
 ok('decay curve costs time', !decayExpected || TL.duration > TL.flatDuration, TL.duration.toFixed(2) + 's vs flat ' + TL.flatDuration.toFixed(2) + 's');
 ok('flat run never slower', TL.flatDuration <= TL.duration + 1e-9);
 ok('transcript rendered', $('#transcript').children.length === TL.items.length, TL.items.length + ' blocks');
-ok('ledger table rows', $('#ledger').children.length === TL.reqs.length + 1);
+ok('request table rows rendered', $('#reqTable').children.length === TL.reqs.length + 1);
 ok('summary filled', $('#summary').children.length >= 20 && $('#summary').children.length % 2 === 0);
 ok('curve chart drawn', $('#curveChart').children.length > 5);
 ok('share url carries curve', /curve=/.test($('#shareUrl').value));
@@ -705,12 +705,20 @@ ok('corpus sweep covered the picker', AS.sessions.length >= 4 && corpusBad.lengt
    AS.sessions.length + ' scenarios, ' + corpusBad.length + ' rejected');
 
 /* the summary is the panel's first card and its first two rows are the ones that
-   carry it, so pin both: the card drifting back below the ledger, or the rows being
+   carry it, so pin both: the card drifting back below the request table, or the rows being
    reordered away from total + phase split, is a regression rather than a redesign */
 const PANEL = html.slice(html.indexOf('<aside class="panel"'), html.indexOf('</aside>'));
 ok('summary is the first card in the panel',
    PANEL.indexOf('id="summary"') >= 0 && PANEL.indexOf('id="summary"') < PANEL.indexOf('id="prefill"'),
    'summary at ' + PANEL.indexOf('id="summary"') + ', engine at ' + PANEL.indexOf('id="prefill"'));
+/* the request table is the per-request detail behind those totals, so it rides directly under
+   the summary and above the controls that change it: pin it there rather than letting it
+   drift back down the panel */
+ok('requests history follows the summary',
+   PANEL.indexOf('id="reqTable"') > PANEL.indexOf('id="summary"')
+     && PANEL.indexOf('id="reqTable"') < PANEL.indexOf('<h2>Engine</h2>'),
+   'requests at ' + PANEL.indexOf('id="reqTable"') + ', engine at '
+     + PANEL.indexOf('<h2>Engine</h2>'));
 /* contention is a property of the engine, not a thing beside it, so its rows live under the
    engine heading as one group: still named, still hover-documented, but the panel no longer
    spends a card on two number fields. The five controls have to stay in one card and in
@@ -941,8 +949,8 @@ ok('the corpus reference is quoted only in the regime it was measured in',
    SPLIT_ROW.value + '  |  ' + (SPLIT_NOTE ? 'note quotes it' : 'note stays quiet'));
 
 console.log('\nstats: ' + JSON.stringify(S, (k, v) => (typeof v === 'number' ? +v.toFixed(1) : v)));
-console.log('ledger:');
-for (const r of TL.reqs) console.log('  #' + r.no + ' ctx=' + r.ctx + ' queue=' + Math.round(r.queueMs) + 'ms prefill=' + Math.round(r.prefillMs) + 'ms avg=' + r.avgDecode.toFixed(1) + 't/s out=' + r.out);
+console.log('requests:');
+for (const r of TL.reqs) console.log('  #' + r.no + ' ctx=' + r.ctx + ' queue=' + Math.round(r.queueMs) + 'ms prefill=' + Math.round(r.prefillMs) + 'ms decode=' + Math.round((r.end - r.decodeStart) * 1000) + 'ms out=' + r.out);
 /* the reason a check failed has to reach the terminal: a corpus rejection pushes its invariant
    into errors, and a summary that only counts them leaves whoever runs this guessing which rule
    broke and hunting the corpus for it */

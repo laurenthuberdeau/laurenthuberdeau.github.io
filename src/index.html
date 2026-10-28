@@ -56,6 +56,14 @@
       <dl class="summary" id="summary"></dl>
     </div>
 
+    <!-- the per-request rows are the detail behind the summary's totals, so they ride directly
+         under that card rather than below the controls: a settings change re-renders them along
+         with the summary, and the two are meant to be read together without scrolling -->
+    <div class="card">
+      <h2>Requests history</h2>
+      <table id="reqTable"></table>
+    </div>
+
     <div class="card">
       <h2>Engine</h2>
       <!-- the name is a caption, not a label pointing at the control: a browser suppresses the
@@ -90,11 +98,6 @@
         <button data-curve="cliff">cliff</button>
         <button id="addPoint">+ point</button>
       </div>
-    </div>
-
-    <div class="card">
-      <h2>Request ledger</h2>
-      <table id="ledger"></table>
     </div>
 
     <div class="card">
