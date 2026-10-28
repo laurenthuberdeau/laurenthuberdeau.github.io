@@ -182,8 +182,8 @@ shows every call it made.
 
 The **session summary is the first card in the
 panel**, because it is the thing you come back to after every settings change: it leads with
-`total` and `prefill : decode` — the split between the two faces of inference, `9.8:1` for
-`long-log`, `0.54:1` for `doc` — then the phases, the context, and what the prompt cache
+`total` and `prefill : decode` — the split between the two faces of inference, `9.8 : 1` for
+`long-log`, `0.54 : 1` for `doc` — then the phases, the context, and what the prompt cache
 avoided. Three rows share one shape, `125k tok (2m 27s)`, so the card reads as columns:
 
 ```

@@ -405,7 +405,7 @@ function buildTimeline() {
    when one phase is an order of magnitude smaller than the other */
 function pfDk(prefillMs, decodeMs) {
   const r = prefillMs / Math.max(1e-9, decodeMs);
-  return (r >= 10 ? r.toFixed(0) : r >= 1 ? r.toFixed(1) : r.toFixed(2)) + ':1';
+  return (r >= 10 ? r.toFixed(0) : r >= 1 ? r.toFixed(1) : r.toFixed(2)) + ' : 1';
 }
 
 /* ------------------------------ DOM build ------------------------------- */
@@ -894,7 +894,7 @@ function rebuild() {
 function tipsFor(cache) {
   return {
     total: 'Wall time of the run: queue + prefill + decode + tool exec + turn gaps.',
-    split: 'Ratio between prefill and decode time. 1:1 means one second of prompt processing '
+    split: 'Ratio between prefill and decode time. 1 : 1 means one second of prompt processing '
          + 'for every second of decoding.',
     prefill: 'Prompt tokens the engine had to process, and the total time it took, at prefill '
            + 'tok/s × the decay curve. ' + (cache
