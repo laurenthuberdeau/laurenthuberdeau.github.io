@@ -225,8 +225,8 @@ grows" — and the two are deliberately free to phrase things differently. One d
 mechanism for the whole page — native, on
 hover, `help` cursor to say it is there — rather than a bubble of the page's own that only half
 the surface uses. The line under the controls stays what it always was: `TTFT ≈ queue + prefill +
-decode 1 token`, with its own note on the terms. After the engine card comes the decay curve, and
-the Link card closes the panel. In the requests history, the
+decode 1 token`, with its own note on the terms. After the engine card comes the decay curve,
+which closes the panel. In the requests history, the
 `prefilled` column shows how many prompt tokens that request actually had to ingest. Curve table cells commit
 when the field loses focus, or on `enter`; `escape` puts the old number back. Nothing plays
 itself unless it is asked to: the page loads parked, and any change to a session setting —
@@ -252,18 +252,15 @@ own duration.
 | parameter             | meaning                                             |
 |-----------------------|-----------------------------------------------------|
 | `session`             | any scenario id — `greenfield`, `bug-hunt`, `long-log`, `deep-fix`, `sweep`, `oncall`, `migration`, `refactor`, `doc`, `repro`, `audit` |
-| `prefill`, `p`        | prefill speed in tok/s                               |
-| `decode`, `d`         | decode speed in tok/s, before the curve              |
-| `cache`, `c`          | prompt cache, `1` on (default) or `0` off            |
-| `latency`, `l`        | queue wait in front of each request, in ms           |
+| `prefill`             | prefill speed in tok/s                               |
+| `decode`              | decode speed in tok/s, before the curve              |
+| `cache`               | prompt cache, `1` on (default) or `0` off            |
+| `latency`             | queue wait in front of each request, in ms           |
 | `jitter`              | ± jitter on that wait in ms, drawn from a fixed seed  |
 | `curve`               | `flat`, `gentle`, `steep`, `cliff`, or `ctx:mult` points such as `0:100,32000:60` |
-| `speed`, `s`          | playback speed `0.25`–`16`                           |
+| `speed`               | playback speed `0.25`–`16`                           |
 | `autoplay`            | `1` to play on load — parked at zero by default, and switching scenario always pauses   |
 | `theme`               | `dark`, `light` — defaults to your OS preference unless set      |
-
-The Link card in the panel mirrors the live configuration, and *copy link* writes the full
-self-describing URL to the clipboard.
 
 ```
 index.html?session=long-log&prefill=60000&decode=240&latency=2500&jitter=1500&cache=0&curve=cliff&speed=4

@@ -191,7 +191,6 @@ ok('transcript rendered', $('#transcript').children.length === TL.items.length, 
 ok('request table rows rendered', $('#reqTable').children.length === TL.reqs.length + 1);
 ok('summary filled', $('#summary').children.length >= 20 && $('#summary').children.length % 2 === 0);
 ok('curve chart drawn', $('#curveChart').children.length > 5);
-ok('share url carries curve', /curve=/.test($('#shareUrl').value));
 
 /* --- phase coverage --- */
 const seen = new Set();
@@ -666,8 +665,6 @@ if (circles.length) {
   $('#curveChart').dispatch('pointermove', { target, clientX: 180, clientY: 60 }); pump();
   $('#curveChart').dispatch('pointerup');
 }
-$('#shareUrl').dispatch('focus');
-guard('copy', () => $('#copy').dispatch('click'));
 ok('handler battery clean', errors.length === 0, errors.slice(0, 3).join(' ;; '));
 ok('config survived handler battery', AS.config.prefill > 0 && AS.config.decode > 0 && AS.tl.duration > 0);
 
@@ -964,17 +961,6 @@ ok('the cache saving follows the prefill row it answers',
 ok('the card shows the cache instead of restating it',
    !ORDER.includes('prompt cache') && /id="cacheName"[^>]*>prompt cache</.test(PANEL_CODE),
    ORDER.join(' · '));
-/* the corpus split is measured with the cache on, so it is a reference only inside that regime
-   - against a cache-off run it would compare a cached-prefix engine with one that re-reads every
-   prompt whole. The row's value and its hover note have to agree on whether the comparison is
-   being made at all, or the note explains a number that is not on screen */
-const SPLIT_ROW = ROWS['prefill : decode'];
-const SPLIT_CELL = DL.children[ORDER.indexOf('prefill : decode') * 2 + 1];
-const SPLIT_REF = /corpus at defaults/.test(SPLIT_ROW.value);
-const SPLIT_NOTE = /default profile/.test(SPLIT_CELL.getAttribute('title') || '');
-ok('the corpus reference is quoted only in the regime it was measured in',
-   (!SPLIT_REF || !!AS.config.cache) && SPLIT_REF === SPLIT_NOTE,
-   SPLIT_ROW.value + '  |  ' + (SPLIT_NOTE ? 'note quotes it' : 'note stays quiet'));
 
 console.log('\nstats: ' + JSON.stringify(S, (k, v) => (typeof v === 'number' ? +v.toFixed(1) : v)));
 console.log('requests:');

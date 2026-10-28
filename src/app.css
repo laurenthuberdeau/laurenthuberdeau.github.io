@@ -225,7 +225,6 @@
   svg.chart circle:hover { fill: var(--accent); }
   .btns { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
   .btns button { flex: 1 1 auto; font-size: 11px; padding: 3px 6px; }
-  input.share { width: 100%; font-size: 10px; color: var(--fg-dim); background: var(--panel-2); border: 1px solid var(--border); border-radius: 5px; padding: 5px 6px; }
   dl.summary { margin: 0; display: grid; grid-template-columns: 1fr auto; gap: 2px 8px; font-size: 11px; }
   dl.summary dt { color: var(--fg-dimmer); }
   dl.summary dd { margin: 0; text-align: right; color: var(--fg); font-variant-numeric: tabular-nums; }
@@ -239,7 +238,6 @@
   /* one documentation mechanism for the whole page: a native note on hover, and the cursor
      says there is one to find */
   dl.summary [title], .ctl[title], .row[title], .gsub[title], .hint[title] { cursor: help; }
-  .kbd { border: 1px solid var(--border-2); border-bottom-width: 2px; border-radius: 4px; padding: 0 4px; color: var(--fg-dim); font-size: 11px; }
   @media (max-width: 900px) {
     /* On a narrow window the panel is a view, not a sidebar. Stacked under the session it
      started a screen below the phase bar and both halves were too short to read, so the two

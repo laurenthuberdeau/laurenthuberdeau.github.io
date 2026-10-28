@@ -166,17 +166,17 @@ function resolveCurve(raw) {
   return parseCurve(raw, CURVES[DEFAULTS.curve]);
 }
 function readSpeed() {
-  const v = qnum('speed', qnum('s', DEFAULTS.speed));
+  const v = qnum('speed', DEFAULTS.speed);
   return SPEEDS.includes(v) ? v : DEFAULTS.speed;
 }
 
 const config = {
   session:  SESSIONS.some(s => s.id === Q.get('session')) ? Q.get('session') : DEFAULTS.session,
-  prefill:  bounded('prefill', qnum('p', DEFAULTS.prefill), LIMITS.prefill, true),
-  decode:   bounded('decode', qnum('d', DEFAULTS.decode), LIMITS.decode, true),
-  latency:  bounded('latency', qnum('l', DEFAULTS.latency), LIMITS.latency, true),
+  prefill:  bounded('prefill', DEFAULTS.prefill, LIMITS.prefill, true),
+  decode:   bounded('decode', DEFAULTS.decode, LIMITS.decode, true),
+  latency:  bounded('latency', DEFAULTS.latency, LIMITS.latency, true),
   jitter:   bounded('jitter', DEFAULTS.jitter, LIMITS.jitter, true),
-  cache:    qbool('cache', qbool('c', !!DEFAULTS.cache)),
+  cache:    qbool('cache', !!DEFAULTS.cache),
   speed:    readSpeed(),
   autoplay: qbool('autoplay', !!DEFAULTS.autoplay),
   /* the head script resolves the theme before first paint; this is only a fallback */
@@ -887,7 +887,6 @@ function rebuild() {
   render(vTime);
   updatePlayBtn();
   updateSummary();
-  updateShare();
 }
 
 /* the panel is the only place these definitions are written down, so every row carries a
@@ -1243,16 +1242,13 @@ for (const s of SPEEDS) {
 speedSel.value = String(config.speed);
 speedSel.addEventListener('change', () => {
   config.speed = parseFloat(speedSel.value) || 1;
-  updateShare();
 });
 
 $('#play').addEventListener('click', togglePlay);
 $('#restart').addEventListener('click', restart);
 $('#theme').addEventListener('click', () => {
   config.theme = config.theme === 'light' ? 'dark' : 'light';
-  themeChosen = true;
   document.documentElement.dataset.theme = config.theme;
-  updateShare();
 });
 $('#panelToggle').addEventListener('click', () => {
   document.documentElement.classList.toggle('no-panel');
@@ -1267,7 +1263,6 @@ $('#phase').addEventListener('keydown', (e) => {
   if (e.stopPropagation) e.stopPropagation();   /* keep the global space/enter handler out */
   stepPhase(e.shiftKey ? -1 : 1);
 });
-$('#reset').addEventListener('click', () => { location.href = location.pathname; });
 
 /* the phase bar is also a control: it steps the playhead to the next phase boundary,
    which is how you walk a session turn by turn instead of hunting the seek bar for the
@@ -1337,51 +1332,14 @@ document.addEventListener('keydown', (e) => {
   else if (/^[1-9]$/.test(e.key) && Number(e.key) <= SPEEDS.length) {
     config.speed = SPEEDS[Number(e.key) - 1];
     speedSel.value = String(config.speed);
-    updateShare();
   }
 });
 
-/* ------------------------------- sharing -------------------------------- */
-/* the theme is only part of the link once it has been chosen: otherwise a copied link
-   forces the sender's OS preference on whoever opens it */
-let themeChosen = Q.get('theme') === 'light' || Q.get('theme') === 'dark';
 /* the settings button opens and closes the panel, so it owns aria-expanded */
 function syncPanelToggle() {
   $('#panelToggle').setAttribute('aria-expanded',
     String(!document.documentElement.classList.contains('no-panel')));
 }
-function shareURL() {
-  const base = location.href.split('?')[0].split('#')[0];
-  const p = new URLSearchParams();
-  p.set('session', config.session);
-  p.set('prefill', String(config.prefill));
-  p.set('decode', String(config.decode));
-  p.set('latency', String(config.latency));
-  p.set('jitter', String(config.jitter));
-  p.set('cache', config.cache ? '1' : '0');
-  p.set('speed', String(config.speed));
-  p.set('curve', config.curve.map(c => Math.round(c.ctx) + ':' + Math.round(c.mult)).join(','));
-  /* a link copied from a playing page replays on its own; a link copied from a parked one
-     does not */
-  p.set('autoplay', playing || config.autoplay ? '1' : '0');
-  if (themeChosen) p.set('theme', config.theme);
-  return base + '?' + p.toString();
-}
-function updateShare() { $('#shareUrl').value = shareURL(); }
-
-const COPY_LABEL = 'copy link';
-let copyTimer = 0;
-$('#copy').addEventListener('click', async () => {
-  const url = shareURL();
-  try { await navigator.clipboard.writeText(url); }
-  catch (err) { $('#shareUrl').select(); document.execCommand('copy'); }
-  /* restore the constant label, not whatever was on the button at click time, so a second
-     click inside the window cannot save 'copied ✓' as the label to put back */
-  clearTimeout(copyTimer);
-  $('#copy').textContent = 'copied ✓';
-  copyTimer = setTimeout(() => { $('#copy').textContent = COPY_LABEL; }, 1200);
-});
-$('#shareUrl').addEventListener('focus', (e) => e.target.select());
 
 /* --------------------------------- boot --------------------------------- */
 window.addEventListener('resize', () => drawCurve());
