@@ -155,22 +155,33 @@ with the boot step still peeking over it and neither half was tall enough to rea
 window the session gets that space when the page loads, so opening settings is your move, not
 the page's.
 
-The transcript follows the run by itself. A message that is still streaming is held a hand's
-width above the bottom edge of the pane, so the live line stays the live line; a block that
-arrives all at once — a tool result, the next user message, a compaction — is placed by its
-*first* line
-instead, because the long results in these corpuses are taller than the pane and pinning
-their bottom would drop you into the last screenful and never show the beginning. Scroll up
-and the pane is yours again; return to the live edge, or move the playhead by any route — the
-seek bar, a click on the phase bar, `←` `→` — and the sim takes it back. It knows its own
-scrolls from yours, so following a tall block by its first line does not read as you having
-taken over. That hand's width is also the pane's entire bottom padding, and that is the whole
-reason it is small: a scroll container counts its own padding in its scroll height, so the
-`26vh` this pane used to carry made it overflow its own content and wear a scrollbar on a
-session of three short messages — and the bar should mean *there is more to read*, not *there
-is blank space below*.
+The transcript follows the run by itself. A message that is still streaming is kept at the end
+of the pane, where its newest line is, and the pane reserves a cushion below its content so
+that line rests on space instead of on the bottom border — the message being written sits
+about three fifths of the way down the pane, which is where you are reading it from. A block
+that arrives all at once — a tool result, the next user message, a compaction — is placed by
+its *first* line instead, because the long results in these corpuses are taller than the pane
+and pinning their bottom would drop you into the last screenful and never show the beginning.
+Scroll up and the pane is yours again; return to the bottom of the scroll, or move the
+playhead by any route — the seek bar, a click on the phase bar or on a request row, `←` `→` —
+and the sim takes it back. It knows its own scrolls from yours, so following a tall block by
+its first line does not read as you having taken over.
 
-Nothing in a message shows up before the stream produces it. The framed **tool call** box —
+That cushion is the pane's whole bottom padding, `min(40vh, 260px)`, and both halves of the
+`min()` are load-bearing. A scroll container counts its own padding in its scroll height, so
+an unbounded `40vh` would lift the newest line off the top of its own pane on a short window —
+and this pane used to carry `26vh` for no reason at all, wearing a scrollbar on a session of
+three short messages — while a flat `260px` is no cushion on a tall one. What it costs is the
+thing the bar reports: a session short enough to fit still has something to scroll, and the
+last part of what it scrolls is rest rather than text.
+
+Nothing in a message shows up before the stream produces it, and not only out of sight: a
+block the run has not reached is out of the *layout*, so the pane's height is the session as
+far as it has been told, plus the one cushion under it that belongs to no message. Nothing
+above the bottom of the content is room the run has not earned, and the end of what the run
+has told is where the pane comes to rest — which is what a requests row scrolls to. It also
+means the pane has to be told never to follow a block that is not revealed: one with no box
+reports a rect of nothing, and the pane would lurch to its top. The framed **tool call** box —
 the block that reads `tool call · Bash` over the arguments as they are generated — is built
 along with the message but stays hidden until the model starts emitting it: its first argument
 token, or for a call with no arguments the moment the prose before it ends. So it never sits
@@ -195,6 +206,22 @@ decode              426 tok (15.00s)
 The **requests history is the second card**, directly under the summary rather than at the far
 end of the panel: its rows are the per-request detail behind those totals, and both cards
 re-render on every settings change, so they are read together without scrolling.
+
+The request table answers a question its own numbers cannot — *which message is this?* — so a
+row is a link into the transcript, and the link is only a seek. The clock goes to that
+request's last token and the pane does for it what it does for the playhead anywhere else:
+follow to the end of what the run has told. That is the whole implementation, and it lands
+where you meant because of the two rules already there — nothing the run has not reached has a
+box, so there is no blank to land on, and a request's last token is the one instant its
+message is entirely there. So a row clicked while the session is still parked at zero reads
+that request in full instead of scrolling to an empty pane, and tabbing to a row and pressing
+`enter` does what the pointer does. Because it is a seek rather than a new kind of navigation,
+the run keeps whatever it was doing: clicked mid-decode it does not pause, the message comes
+up finished and the run plays on past it. And because the pane shows where the run got to
+rather than the beginning of a block, a message taller than the pane comes up on the line its
+request ended on — the same rule that holds any streaming message rests at the end of the pane
+on its cushion — and you scroll up from there to read it from the start. Each row carries that
+on hover, and takes the pointer.
 
 `prefill` is what the engine had to ingest and `prefill (cached)` what it did not, sitting
 under the cost it answers rather than at the end of the card where it would be read long after
@@ -281,19 +308,33 @@ stop at the end of the run rather than wrapping, and `shift-click` must walk bac
 boundaries, including from a boundary itself, where a naive implementation would be a no-op.
 
 The transcript's follow is measured against a synthetic layout, because the shim has no box
-model: the test gives the pane a height, stacks the blocks, and lets a block's reported
-position move with `scrollTop` the way a scroll container's does. A block that arrives whole
-must end up with its first line at the top of the pane, and a block that is still streaming
-must end with its live line on screen — and because the shim's tool results are made taller
-than the pane, the second rule cannot be satisfied by the shortcut of pinning the bottom of
-the transcript, which is what the follow used to do. A framed tool-call box is sampled on
-either side of the exact instant it becomes real — 50 ms before its first argument token it
-must be hidden, at the token it must be visible, and once the playhead goes back past the
-message it must be hidden again — and a run played to the end must show every call it made, so
-the rule cannot be satisfied by simply never showing one. One check crosses the layer boundary
-to compare the pane's bottom padding with the inset the follow code asks for, because the two
-have to stay equal: any more reserved space and a session that fits on screen still overflows
-and shows a scrollbar, any less and the streaming line is clamped flush against the pane edge.
+model: the test gives the pane a height, stacks the blocks, lets a block's reported position
+move with `scrollTop` the way a scroll container's does, and — the way the page's CSS has it —
+gives a box only to a block the run has reached. So the checks that the layout is honest come
+first: at zero only the boot prompt and the first instruction have boxes and the pane has
+nothing to scroll, and while a tool runs its result has no box at all and the pane does not
+move. A block that arrives whole must then end up with its first line at the top of the pane,
+and a block still streaming must end with its live line on screen — and because the shim's
+tool results are made taller than the pane, the second rule cannot be satisfied by the
+shortcut of pinning the bottom of the transcript, which is what the follow used to do. The
+requests history is measured on the same layout, and what it measures is one seek: from parked
+at zero, mid-run and at the end, a row must leave the clock on its request's last token and
+that message the newest block in the pane with its live line on screen, and must give the
+keyboard the jump the pointer gave while keeping the header row a no-op. Clicked mid-decode
+while the run plays, it must come up on the finished message and leave the run playing. The
+messages it clicks are made taller than the pane first, so a pane that moved and stayed there
+cannot be the luck of a session that fits on screen. One check pins the CSS behind the whole
+thing rather than the model of it: the rule that hides an unrevealed message must take it out
+of the layout, because a message that is merely invisible is still room the run has not
+earned. A framed tool-call box is sampled on either side of the exact instant it becomes real
+— 50 ms before its first argument token it must be hidden, at the token it must be visible,
+and once the playhead goes back past the message it must be hidden again — and a run played to
+the end must show every call it made, so the rule cannot be satisfied by simply never showing
+one. One check reads the pane's padding out of the built page instead of repeating it, because
+the follow rule has no number of its own any more — it scrolls to the end of the pane, and the
+cushion decides how high that leaves the newest line — and that check also holds the padding
+to `min(vh, px)`: a cushion is welcome, an unbounded one or a fixed one is a pane that cannot
+read itself on a short or a tall window.
 
 After the handlers it walks the whole corpus, not just the scenario the URL picked, and holds
 every entry to the same shape: it opens on a user turn and closes on a tool-free assistant

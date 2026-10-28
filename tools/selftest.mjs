@@ -247,67 +247,180 @@ ok('phase bar always has something to say', BAR.every(([,, v, k]) => k.length > 
    BAR.length + ' samples, shortest detail ' + Math.min(...BAR.map(([, , v]) => v.length)) + ' chars');
 /* --- transcript follow -------------------------------------------------------------
    The shim has no box model, so give the pane one: blocks stack down the page and report
-   positions relative to the pane's scrollTop, the way a scroll container does. Tool blocks
-   are made taller than the pane on purpose — these corpuses are full of long tool results,
-   and a block that cannot fit is exactly where following the bottom edge would drop the
-   reader on its last screenful instead of its first. */
-const PANE = 400;
-/* the follow insets the page aims for; duplicated here on purpose — if the two disagree the
+   positions relative to the pane's scrollTop, the way a scroll container does — and, the way
+   the page's CSS has it, only a *revealed* block has a box at all. An unrevealed one takes no
+   room, so the stack and the scroll height are the session as far as it has been told, and the
+   end of the scroll range is the newest thing the run produced. Tool blocks are made taller
+   than the pane on purpose — these corpuses are full of long tool results, and a block that
+   cannot fit is exactly where following the bottom edge would drop the reader on its last
+   screenful instead of its first. */
+const PANE = 700, VIEW = 900;
+/* What the page reserves under its content is read out of the CSS this shim stands in for rather
+   than repeated here: min(40vh, 260px) is 260px of cushion at a 900px window. That space is
+   where the newest line of a streaming message comes to rest — the end of the pane is the bottom
+   of the cushion, not the pane's edge — so it belongs in the model of the pane. */
+const PAD_TOP = 18, MSG_GAP = 14;
+const CUSHION = (((html.match(/\.transcript \{[^}]*\}/) || [''])[0])
+  .match(/padding:[^;]*min\(\s*([\d.]+)vh\s*,\s*([\d.]+)px\s*\)/) || []);
+const PAD_BOTTOM = CUSHION.length === 3
+  ? Math.min(parseFloat(CUSHION[1]) / 100 * VIEW, parseFloat(CUSHION[2])) : 0;
+const LIVE_LINE = PANE - PAD_BOTTOM - MSG_GAP;
+/* the inset the whole-block rule aims for, duplicated here on purpose — if the two disagree the
    check below measures the wrong target, which is exactly the drift worth catching */
-const TOP_INSET = 10, BOT_INSET = 12;
+const TOP_INSET = 10;
 const TR = $('#transcript');
 TR.scrollTop = 0; TR.clientHeight = PANE;
 TR.getBoundingClientRect = () => ({ top: 0, bottom: PANE, height: PANE, left: 0, right: 320, width: 320 });
-let stackY = 0;
+const NO_BOX = { top: 0, bottom: 0, height: 0, width: 0, left: 0, right: 0 };
+const shownBlk = (b) => b.classList.contains('shown');
+/* the pane's own box, mirrored from the CSS: .transcript padding and the gap .msg leaves
+   below it */
+const topOf = (blk) => {
+  let y = PAD_TOP;
+  for (const b of TR.children) { if (b === blk) return y; if (shownBlk(b)) y += b._h + MSG_GAP; }
+  return 0;
+};
+const paneHeight = () => PAD_TOP + PAD_BOTTOM +
+  TR.children.reduce((a, b) => a + (shownBlk(b) ? b._h + MSG_GAP : 0), 0);
 for (const blk of TR.children) {
-  blk._top = stackY;
-  blk._h = String(blk.className).includes('msg tool') ? 700 : 120;
-  stackY += blk._h + 8;
+  blk._h = String(blk.className).includes('msg tool') ? 1200 : 120;
   blk.getBoundingClientRect = () => {
-    const t = blk._top - (TR.scrollTop || 0);
+    if (!shownBlk(blk)) return NO_BOX;
+    const t = topOf(blk) - (TR.scrollTop || 0);
     return { top: t, bottom: t + blk._h, height: blk._h, left: 0, right: 320, width: 320 };
   };
 }
-TR.scrollHeight = stackY;
-const maxTop = Math.max(0, stackY - PANE);
+Object.defineProperty(TR, 'scrollHeight', { get: paneHeight, configurable: true });
+/* where the pane can be scrolled to, which moves with what the run has revealed */
+const maxTop = () => Math.max(0, paneHeight() - PANE);
+/* the session before it has been told is its boot prompt and the first instruction, and nothing
+   else has a box: there is nothing below them to scroll to, so the pane must not wear a bar
+   over the space the rest of the session used to reserve */
+AS.pause(); AS.seek(0); pump();
+const BOXES0 = TL.items.filter((i) => i.el && shownBlk(i.el));
+ok('a block has a box only once the run has reached it',
+   BOXES0.length > 0 && BOXES0.length < TL.items.length &&
+     BOXES0.every((i) => (i.at ?? i.latencyStart) <= 1e-9) &&
+     maxTop() === 0 && TR.scrollTop === 0,
+   BOXES0.length + ' of ' + TL.items.length + ' blocks have boxes at zero, scroll room ' + maxTop());
 const FOLLOW = [];
 for (const item of TL.items) {
   /* a whole block is sampled when it is revealed (its exec has ended), because a running
-     tool's result must not be scrolled into view while it is still hidden */
+     tool's result must not be scrolled into view while it has no box at all */
   const at = item.kind === 'assistant' ? (item.decodeStart + item.end) / 2
            : item.kind === 'tool' ? item.at : null;
   if (at === null || at <= 0 || at >= TL.duration || !item.el) continue;
   AS.seek(at); pump();
   const b = item.el.getBoundingClientRect();
+  /* the pane's scroll range is sampled with the placement, because it is what the run has
+     revealed *at that instant* — the last block has nothing below it to scroll past, and a
+     block that cannot reach where the rule aims has reached as far as the pane can go */
   FOLLOW.push({ kind: item.kind, h: item.el._h, top: Math.round(b.top),
-    bottom: Math.round(b.bottom), st: TR.scrollTop });
+    bottom: Math.round(b.bottom), st: TR.scrollTop, max: maxTop() });
 }
-/* while a tool runs, the block that started it stays in view: the not-yet-revealed result
-   must not be followed, or the pane is left showing an invisible block for the exec */
+/* while a tool runs, its result has no box to scroll to and the pane does not move: the block
+   to keep in view is the call that started the exec, not a result that does not exist yet */
 const EXEC = [];
 for (const item of TL.items) {
   if (item.kind !== 'tool') continue;
   const mid = (item.from + item.at) / 2;
   if (mid <= 0 || mid >= TL.duration || !item.el) continue;
+  AS.seek(item.from + 1e-4); pump();
+  const atStart = { box: item.el.getBoundingClientRect().height, st: TR.scrollTop };
   AS.seek(mid); pump();
-  EXEC.push({ top: Math.round(item.el.getBoundingClientRect().top) });
+  EXEC.push({ box: atStart.box, atStart: atStart.st, atMid: TR.scrollTop });
 }
-ok('a running tool does not scroll its hidden result into view',
-   EXEC.every((e) => e.top > TOP_INSET + 14),
-   EXEC.map((e) => e.top).join(' '));
+ok('a running tool has nothing to scroll to, and does not move the pane',
+   EXEC.length > 0 && EXEC.every((e) => e.box === 0 && Math.abs(e.atMid - e.atStart) < 2),
+   EXEC.length + ' execs sampled, all results boxless = ' + EXEC.every((e) => e.box === 0) +
+     ', pane still = ' + EXEC.every((e) => Math.abs(e.atMid - e.atStart) < 2));
 /* the pane cannot always place a block exactly where it wants — the last blocks have
    nothing below them to scroll past — so hitting the end of the scroll range counts */
-const atLimit = (f) => f.st >= maxTop - 1.5;
+const atLimit = (f) => f.st >= f.max - 1.5;
 const wholeF = FOLLOW.filter((f) => f.kind !== 'assistant');
 ok('a block that arrives whole opens on its first line',
    wholeF.some((f) => f.h > PANE) &&
    wholeF.every((f) => (f.top >= TOP_INSET - 2 && f.top <= TOP_INSET + 14) || atLimit(f)),
    wholeF.map((f) => f.h + 'px@' + f.top).join(' '));
-ok('a streaming block keeps its live line on screen',
-   FOLLOW.filter((f) => f.kind === 'assistant').every((f) => f.bottom <= PANE - BOT_INSET + 2 || atLimit(f)),
-   FOLLOW.filter((f) => f.kind === 'assistant').map((f) => f.bottom).join(' '));
+ok('a streaming message rests on the cushion, not on the pane edge',
+   FOLLOW.filter((f) => f.kind === 'assistant').every((f) => Math.abs(f.bottom - LIVE_LINE) <= 2 || atLimit(f)),
+   FOLLOW.filter((f) => f.kind === 'assistant').map((f) => f.bottom).join(' ') +
+     ' vs cushion at ' + LIVE_LINE);
 ok('following the run moves the pane', TR.scrollTop > 0, 'scrollTop ' + Math.round(TR.scrollTop) +
-   ' of ' + maxTop + ' over ' + FOLLOW.length + ' blocks');
+   ' of ' + maxTop() + ' over ' + FOLLOW.length + ' blocks');
+/* --- reading a request out of the requests history -------------------------------------
+   A row in that table is the per-request detail behind the summary, and it is a link into the
+   transcript: it seeks the clock to that request's last token. Nothing else, because the two
+   rules the page already has do the rest — an unrevealed block has no box, so there is never a
+   blank to land on, and the pane follows the playhead to the end of what the run has told,
+   which after that seek is the message the request produced. */
+const rowFor = (no) => $('#reqTable').children.filter((tr) => tr.dataset.req === String(no))[0];
+const clickRow = (no) => $('#reqTable').dispatch('click', { target: rowFor(no) });
+const keyRow = (no) => $('#reqTable').dispatch('keydown', { target: rowFor(no), key: 'Enter' });
+ok('every request row knows its request and says what clicking it does',
+   TL.reqs.every((r) => r.row.dataset.req === String(r.no) && r.row.tabIndex === 0 &&
+                        String(r.row.title).length > 12),
+   TL.reqs.length + ' rows, first note ' + JSON.stringify(String(TL.reqs[0].row.title)));
+/* the same jump from everywhere: parked at zero with nothing generated, mid-run, and at the end
+   with the whole session on screen. Each message clicked is made taller than the pane first, so
+   "the pane is at its end" cannot be the luck of a session that fits on screen. */
+const JUMPS = [];
+for (const r of [TL.reqs[0], TL.reqs[1], TL.reqs[TL.reqs.length - 1]]) {
+  r.item.el._h = 1200;
+  for (const from of [0, (TL.reqs[0].end + TL.duration) / 2, TL.duration]) {
+    AS.pause(); AS.seek(from); pump();
+    TR.scrollTop = 0; pump();
+    clickRow(r.no);
+    JUMPS.push({ at: from, no: r.no, end: r.item.end, t: AS.vTime,
+                 last: TL.items.filter((i) => i.el && shownBlk(i.el)).pop() === r.item,
+                 box: r.item.el.getBoundingClientRect(), st: TR.scrollTop });
+  }
+}
+ok('a request row leaves the clock on that request\u2019s last token, and its message the newest block',
+   JUMPS.every((j) => Math.abs(j.t - j.end) < 1e-9 && j.last),
+   JUMPS.map((j) => '@' + Math.round(j.at) + ' #' + j.no + '\u2192' + j.t.toFixed(2) +
+     (j.last ? '' : ' NOT-LAST')).join(' \u00b7 '));
+/* and it shows the newest line of that message, resting on the cushion: these messages are
+   taller than the pane, so the row drops you on the line the request ended on rather than its
+   first — the pane shows where the run got to, and it shows it off the bottom edge. */
+ok('a request row leaves the live line of its message resting on the cushion',
+   JUMPS.every((j) => j.st > 0 && Math.abs(j.box.bottom - LIVE_LINE) <= 2 && j.box.top < 0),
+   JUMPS.map((j) => '#' + j.no + ' pane ' + Math.round(j.st) + ' box ' + Math.round(j.box.top) +
+     '..' + Math.round(j.box.bottom)).join(' \u00b7 '));
+TR.scrollTop = 0;
+keyRow(TL.reqs[TL.reqs.length - 1].no);
+const KEYED = TL.reqs[TL.reqs.length - 1].item.el.getBoundingClientRect();
+ok('the keyboard reaches the same jump the pointer has',
+   TR.scrollTop > 0 && Math.abs(KEYED.bottom - LIVE_LINE) <= 2 &&
+     Math.abs(AS.vTime - TL.reqs[TL.reqs.length - 1].end) < 1e-9,
+   'enter on a row scrolled to ' + Math.round(TR.scrollTop) + ', box to ' +
+     Math.round(KEYED.bottom) + ', clock at ' + AS.vTime.toFixed(2));
+/* the header row is not a request, so it must not move the pane */
+TR.scrollTop = 0;
+$('#reqTable').dispatch('click', { target: $('#reqTable').children[0] });
+ok('the header row is not a request and jumps nowhere', TR.scrollTop === 0,
+   'scrollTop ' + TR.scrollTop);
+/* the row is a seek, so the run keeps whatever it was doing: clicked mid-decode it does not
+   pause, it reads the message the decode was building, and the pane stays where the run has it */
+const LIVE = TL.items.filter((i) => i.kind === 'assistant' && i.end - i.decodeStart > 1.5)[0];
+if (LIVE) {
+  LIVE.el._h = 1200;
+  AS.pause(); AS.seek((LIVE.decodeStart + LIVE.end) / 2); pump();
+  AS.play();
+  TR.scrollTop = 0;
+  clickRow(LIVE.req.no);
+  const AT = TR.scrollTop, BOX = LIVE.el.getBoundingClientRect();
+  pump();
+  const STILL = $('#play').textContent;
+  AS.pause();
+  ok('a row clicked mid-stream reads its message and keeps the run running',
+     AT > 0 && Math.abs(BOX.bottom - LIVE_LINE) <= 2 && AS.vTime >= LIVE.end &&
+       STILL.indexOf('pause') !== -1 && TR.scrollTop >= AT,
+     'clock at ' + AS.vTime.toFixed(2) + 's, that request ends at ' + LIVE.end.toFixed(2) +
+       's, button ' + JSON.stringify(STILL) + ', pane at ' + Math.round(AT) + ', box to ' +
+       Math.round(BOX.bottom));
+}
+AS.seek(TL.duration); pump();
 /* the framed tool-call box is built with the message, so it has to be *hidden* until the
    stream reaches it: showing it from the start would announce a tool call through queue,
    prefill and the prose half of decode, which is the one thing a replay should not give
@@ -431,29 +544,42 @@ const BANDS = [...new Set(SEG.map((s) => s.phase))];
 const barRule = (st) => (STYLE.match(new RegExp('\\.phasebar\\[data-phase="' + st + '"\\][^{]*\\{([^}]*)\\}')) || [, ''])[1];
 const PHASE_NAME_SRC = (src.match(/const PHASE_NAME = \{([^}]*)\}/) || [, ''])[1];
 const named = (st) => (PHASE_NAME_SRC.match(new RegExp('\\b' + st + "\\s*:\\s*'([^']+)'")) || [, ''])[1];
-/* a scroll container counts its own bottom padding in the scroll height, so generous or
-   viewport-relative padding makes the pane wear a scrollbar while every message still fits.
-   The bar should mean "there is more to read", never "there is blank space below" — and
-   since blocks are revealed by opacity, the run's full height is always there, so any
-   reserved space at all shows up as overflow on a short session. */
+/* The space under the last message is a cushion the page reserves on purpose. The follow rule
+   puts the end of the content at the end of the pane, so this padding is the space the newest
+   line rests on rather than the pane's edge — text that stops before the border instead of at
+   it. A scroll container counts its own padding in its scroll height, so the cushion has to stay
+   bounded (an unbounded 40vh on a short window lifts the live line off the top of the pane it
+   belongs to) and stay viewport-relative (a fixed 260px on a tall window is no cushion at all).
+   min() is the only shape that is both, and the follow checks above measured against this same
+   declaration rather than a number repeated there. */
 const TR_RULES = [...STYLE.matchAll(/\.transcript \{([^}]*)\}/g)].map((m) => m[1]);
 const padOf = (body, prop) => (body.match(new RegExp(prop + ':\\s*([^;]+)')) || [, ''])[1];
 const bottomOf = (body) => {
   const long = padOf(body, 'padding-bottom');
   if (long) return long;
-  const p = padOf(body, 'padding').trim().split(/\s+/);
-  return p.length >= 3 ? p[2] : p[0] === '' ? '' : (p[1] || '');
+  /* the last term of the shorthand, kept whole: min(40vh, 260px) carries a space inside it */
+  const terms = padOf(body, 'padding').replace(/\(\s*/g, '(').replace(/\s*,\s*/g, ',').trim().split(/\s+/);
+  return terms.length >= 3 ? terms[2] : terms[0] === '' ? '' : (terms[1] || '');
 };
-const trPad = Math.max(...TR_RULES.map((r) => parseFloat(bottomOf(r) || '0') || 0));
-ok('the transcript never reserves viewport-sized space below its content',
-   TR_RULES.length > 0 && TR_RULES.every((r) => !/v[hv]/.test(bottomOf(r)) &&
-     (bottomOf(r) === '' || parseFloat(bottomOf(r)) <= 18)),
-   'padding-bottom ' + TR_RULES.map((r) => bottomOf(r) || 'none').join(' / '));
-/* and the reservation is exactly the gap follow() leaves under a streaming line: any more
-   and a session that fits on screen still overflows and shows a bar, any less and the live
-   line is clamped flush against the pane edge */
-ok('the pane reserves exactly the gap the follow asks for', trPad === BOT_INSET,
-   'padding-bottom ' + trPad + 'px vs follow inset ' + BOT_INSET + 'px');
+const CUSHION_RE = /^min\(\d+(\.\d+)?vh,\d+px\)$/;
+ok('the pane reserves a bounded reading cushion under its content',
+   /* the media query re-declares .transcript to hide it, so only the rules that set padding
+      are on the hook for the cushion — but at least one of them has to set it */
+   TR_RULES.some((r) => CUSHION_RE.test(bottomOf(r))) &&
+     TR_RULES.every((r) => !padOf(r, 'padding') && !padOf(r, 'padding-bottom') ||
+                           CUSHION_RE.test(bottomOf(r))) &&
+     CUSHION.length === 3 && parseFloat(CUSHION[1]) <= 45 && parseFloat(CUSHION[2]) <= 340,
+   TR_RULES.map((r) => bottomOf(r) || 'none').join(' / ') + ' \u2192 ' + PAD_BOTTOM + 'px at a ' +
+     VIEW + 'px window, live line at ' + LIVE_LINE + ' of ' + PANE);
+/* and nothing above the bottom of the pane is history the run has not reached: a message it has
+   not revealed is out of the layout, not merely out of sight. That is what makes the end of the
+   scroll range the newest thing the run produced, which is what a requests row scrolls to. Hiding
+   by opacity or visibility would keep the whole session's height in the pane from the first frame,
+   and the space under the last message would be unread history rather than rest. */
+ok('an unrevealed message is out of the layout, not just out of sight',
+   /\.msg:not\(\.shown\)\s*\{[^}]*display:\s*none/.test(STYLE) &&
+     !/\.msg\s*\{[^}]*(visibility|opacity):/.test(STYLE),
+   (STYLE.match(/\.msg(\[[^\]]*\]|:?[.\w-]*)?\s*\{[^}]*\}/g) || []).slice(0, 2).join(' '));
 ok('every phase-bar state has a colour and a heading',
    PHASE_STATES.every((st) => /--c:\s*var\(--[\w-]+\)/.test(barRule(st)) && named(st)),
    PHASE_STATES.map((st) => st + '=' + (named(st) || '?') + '/' +

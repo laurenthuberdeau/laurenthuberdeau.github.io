@@ -347,9 +347,14 @@ function buildTimeline() {
       };
       lastCompact = null;
       fresh = 0;
+      /* the block this request produced, linked from the request. The row in the requests
+         history and the message in the transcript are two views of one thing, and a click on
+         the first has to be able to find the second */
+      const item = { kind: 'assistant', req, segments, tokens: all, times,
+                     latencyStart, prefillStart, decodeStart, end, shown: -1 };
+      req.item = item;
       reqs.push(req);
-      items.push({ kind: 'assistant', req, segments, tokens: all, times,
-                   latencyStart, prefillStart, decodeStart, end, shown: -1 });
+      items.push(item);
       ctx += all.length;
       if (ctx > peak) peak = ctx;
       t = end;
@@ -410,6 +415,9 @@ function pfDk(prefillMs, decodeMs) {
 
 /* ------------------------------ DOM build ------------------------------- */
 const transcript = $('#transcript');
+/* the requests history: one table node that outlives every rebuild, so a handler can sit on it
+   while buildReqTable() refills its rows on every settings change */
+const REQ_TABLE = $('#reqTable');
 const PHASE_BAR = $('#phase'), PHASE_K = $('#phase .k'), PHASE_V = $('#phase .v'), PHASE_F = $('#phase .fill'),
       PHASE_NEXT = $('#phase .next');
 
@@ -531,7 +539,7 @@ const REQ_HEADERS = [
   ['out', 'Generated tokens streamed so far / this request\u2019s total. Reasoning is included.']
 ];
 function buildReqTable() {
-  const tbl = $('#reqTable');
+  const tbl = REQ_TABLE;
   tbl.textContent = '';
   const head = document.createElement('tr');
   for (const [label, tip] of REQ_HEADERS) {
@@ -544,6 +552,11 @@ function buildReqTable() {
   for (const r of TL.reqs) {
     const tr = document.createElement('tr');
     tr.className = 'pending' + (r.afterCompact ? ' post-compact' : '');
+    /* the row is a way into the transcript, so it carries the number it stands for, the note
+       saying what the click does, and a tab stop — that jump is for the keyboard as well */
+    tr.dataset.req = String(r.no);
+    tr.tabIndex = 0;
+    tr.title = 'Request #' + r.no + ' · jump to the message it produced';
     [(r.afterCompact ? '↻ ' : '') + String(r.no), fmtTok(r.ctx), '', '', '', '', '']
       .forEach(v => tr.appendChild(el('td', 'n', v)));
     tbl.appendChild(tr);
@@ -627,6 +640,11 @@ function countTokens(times, t) {
   return lo;
 }
 
+/* How far inside the pane a block read from its first line lands: inside rather than at the
+   edge, so a line never sits flush against the border, where the pane's own padding would clip
+   half of it. The streaming rule carries no number of its own — see scrollToEnd(). */
+const FOLLOW_TOP = 10;
+
 /* scroll the active block into view. What "in view" means depends on how the block
    arrives: a tool result or the next user message lands all at once, so its beginning is
    what you want, while an assistant message grows token by token and should keep showing
@@ -637,28 +655,66 @@ function follow(item) {
   /* a hidden pane has nothing to scroll: on a narrow window the panel replaces the
      transcript, and writing to it every frame would be layout work for no pixels */
   if (!transcript.clientHeight) return;
-  const c = transcript.getBoundingClientRect(), b = el.getBoundingClientRect();
-  /* aim a little inside the pane rather than at its edge, so a line never sits flush
-     against the border, where the pane's own padding would clip half of it */
   if (item.kind === 'assistant') {
-    /* terminal rule: keep the live line on screen; if the playhead jumped back above this
-       block, come back down to it */
-    if (b.bottom > c.bottom - 12 || b.bottom < c.top) scrollBy(b.bottom - (c.bottom - 12));
-  } else if (Math.abs(b.top - (c.top + 10)) > 2) {
+    /* terminal rule: the newest line rides the end of the pane, where the run is. This is also
+       how the pane comes back down to a message when the playhead jumps back above it */
+    scrollToEnd();
+    return;
+  }
+  const c = transcript.getBoundingClientRect(), b = el.getBoundingClientRect();
+  if (Math.abs(b.top - (c.top + FOLLOW_TOP)) > 2) {
     /* a block that arrives whole is read from its first line, even when a few lines of it
        are already peeking in at the bottom of the pane — one visible line of a long tool
        result is not a place to start reading */
-    scrollBy(b.top - (c.top + 10));
+    scrollBy(b.top - (c.top + FOLLOW_TOP));
   }
 }
+
+/* Read one request in the transcript: put the playhead on its last token and let the pane do
+   the rest. Two rules the page already has turn that into a jump — a request the clock has not
+   streamed has nothing on screen to look at (unreached it has no box at all, queued or
+   prefilling it has an empty one) and its last token is the one instant its message is whole;
+   and the pane follows the playhead to the end of what has been revealed, which after that
+   seek is this message. The transcript is the session as far as it has been told, and clicking
+   a row says where it should be told to. */
+function jumpToRequest(no) {
+  const r = TL.reqs.find((x) => x.no === no);
+  const item = r && r.item;
+  if (!item) return;
+  /* on a narrow window the panel is a whole view and the transcript has no box to show, so
+     swap the views: a row clicked in the settings view is a wish to read the session */
+  if (!transcript.clientHeight) {
+    document.documentElement.classList.add('no-panel');
+    syncPanelToggle();
+  }
+  seek(item.end);
+}
+
+/* how far the pane can be scrolled: its content and its own padding, less what it can show */
+const paneMax = () => Math.max(0, (Number(transcript.scrollHeight) || 0) - (Number(transcript.clientHeight) || 0));
 
 /* one clamped write: scrollTop has no clamping of its own mid-layout, and a negative write
    would fight the browser */
 function scrollBy(delta) {
   if (!delta) return;
   const top = Number(transcript.scrollTop);
-  const max = Math.max(0, (Number(transcript.scrollHeight) || 0) - (Number(transcript.clientHeight) || 0));
-  followTop = clamp((Number.isFinite(top) ? top : 0) + delta, 0, max);
+  scrollTopTo((Number.isFinite(top) ? top : 0) + delta);
+}
+
+/* The end of the pane is a position rather than its edge: what the page reserves under its
+   content is where the newest line rests, so scrolling to the end is what keeping up with the
+   run means, and the pane's padding — not a number kept twice — decides how high that is. */
+function scrollToEnd() {
+  const max = paneMax();
+  if (Math.abs((Number(transcript.scrollTop) || 0) - max) < 1) return;
+  scrollTopTo(max);
+}
+
+/* followTop remembers where the page itself put the pane, because the browser delivers
+   that scroll as an event like any other and the pane must not read its own motion as a
+   reader taking over */
+function scrollTopTo(v) {
+  followTop = clamp(v, 0, paneMax());
   transcript.scrollTop = followTop;
 }
 
@@ -1396,6 +1452,27 @@ function stepPhase(dir) {
   bar.addEventListener('pointerup', () => { dragging = false; });
   bar.addEventListener('pointercancel', () => { dragging = false; });
 })();
+
+/* A row in the requests history is a link into the transcript: it is the per-request detail
+   behind the summary, and the message it describes is the only place you can actually read
+   what that prefill and decode bought. One handler on the table rather than one per row, since
+   every settings change rebuilds the rows and would have to re-attach them. */
+REQ_TABLE.addEventListener('click', (e) => {
+  const row = e.target && e.target.closest ? e.target.closest('tr') : null;
+  /* the header row carries no number, so it is not a request and does nothing */
+  if (row && row.dataset.req) jumpToRequest(Number(row.dataset.req));
+});
+/* the rows are tab stops, so the keyboard gets the same jump. Stop here rather than let the
+   global handler answer for the same key: space on a focused row would otherwise also be
+   play/pause, one press moving the clock twice */
+REQ_TABLE.addEventListener('keydown', (e) => {
+  const row = e.target && e.target.closest ? e.target.closest('tr') : null;
+  if (!row || !row.dataset.req) return;
+  if (e.key !== 'Enter' && e.code !== 'Space') return;
+  e.preventDefault();
+  if (e.stopPropagation) e.stopPropagation();
+  jumpToRequest(Number(row.dataset.req));
+});
 
 transcript.addEventListener('wheel', (e) => {
   /* wheeling up means "show me the older part", so it takes the pane away from the sim.
