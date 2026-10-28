@@ -108,7 +108,7 @@ const mkPts = (src) => src.map(([ctx, mult]) => ({ ctx, mult }));
    fields, the sliders and their clamps, so a link cannot carry a value the panel
    would refuse to show */
 const LIMITS = {
-  prefill: { min: 500, max: 100000 },
+  prefill: { min: 50, max: 100000 },
   decode:  { min: 1, max: 1000 },
   latency: { min: 0, max: 120000 },
   jitter:  { min: 0, max: 60000 }
@@ -1221,7 +1221,7 @@ function syncControls() {
 }
 
 /* While typing, only a value already inside the bounds takes effect, so a partially typed
-   number is never rewritten under the caret (typing 12000 must not become 500 after `1`).
+   number is never rewritten under the caret (typing 12000 must not become 50 after `1`).
    The clamp and the reflect-back land when the field is left, matching the curve table. */
 const num = (id, key, min, max, int) => {
   const node = $('#' + id);

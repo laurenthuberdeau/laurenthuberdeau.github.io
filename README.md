@@ -279,11 +279,11 @@ own duration.
 | parameter             | meaning                                             |
 |-----------------------|-----------------------------------------------------|
 | `session`             | any scenario id — `greenfield`, `bug-hunt`, `long-log`, `deep-fix`, `sweep`, `oncall`, `migration`, `refactor`, `doc`, `repro`, `audit` |
-| `prefill`             | prefill speed in tok/s                               |
-| `decode`              | decode speed in tok/s, before the curve              |
+| `prefill`             | prefill speed in tok/s, `50`–`100000` — the floor is a laptop doing something else, not a typo |
+| `decode`              | decode speed in tok/s, before the curve, `1`–`1000`    |
 | `cache`               | prompt cache, `1` on (default) or `0` off            |
-| `latency`             | queue wait in front of each request, in ms           |
-| `jitter`              | ± jitter on that wait in ms, drawn from a fixed seed  |
+| `latency`             | queue wait in front of each request, in ms, `0`–`120000` |
+| `jitter`              | ± jitter on that wait in ms, `0`–`60000`, drawn from a fixed seed  |
 | `curve`               | `flat`, `gentle`, `steep`, `cliff`, or `ctx:mult` points such as `0:100,32000:60` |
 | `speed`               | playback speed `0.25`–`16`                           |
 | `autoplay`            | `1` to play on load — parked at zero by default, and switching scenario always pauses   |
@@ -292,6 +292,11 @@ own duration.
 ```
 index.html?session=long-log&prefill=60000&decode=240&latency=2500&jitter=1500&cache=0&curve=cliff&speed=4
 ```
+
+One source holds those bounds, so the URL parser, the fields, the sliders and their clamps cannot
+agree with each other: a link that carries something outside them is clamped into them on load and
+the field shows what the link became — `?prefill=10` is the floor, 50 tok/s, and `?prefill=1e9`
+is 100k.
 
 ## Tests
 

@@ -811,6 +811,27 @@ const wasPlaying = $('#play').textContent.indexOf('pause') !== -1;
 $('#prefill').value = '50000'; $('#prefill').dispatch('input');
 ok('a settings change pauses playback', wasPlaying && $('#play').textContent.indexOf('pause') === -1,
    'was playing ' + wasPlaying + ', button now ' + JSON.stringify($('#play').textContent));
+/* The prefill floor is where a slow local model under a big prompt actually lives — a 125k
+   prompt at 50 tok/s is the laptop-doing-something-else case this control exists to draw — so the
+   field has to reach it, and the three places a bound is written have to say the same number: the
+   markup's own min, the bounds every clamp reads, and the value the field lands on. */
+const LIM_SRC = (src.match(/const LIMITS = \{([\s\S]*?)\n\};/) || [, ''])[1];
+const limitOf = (key, bound) => parseFloat(
+  (LIM_SRC.match(new RegExp(key + ':\\s*\\{[^}]*' + bound + ':\\s*(\\d+)')) || [, ''])[1]);
+const PF_MARKUP_MIN = parseFloat(((html.match(/<input\b[^>]*id="prefill"[^>]*>/) || [''])[0]
+  .match(/\bmin="(\d+)"/) || [, ''])[1]);
+const PF_WAS = AS.config.prefill;
+$('#prefill').value = '10'; $('#prefill').dispatch('input');
+const PF_HELD = AS.config.prefill;
+$('#prefill').dispatch('change'); pump();
+const PF_FLOOR = AS.config.prefill, PF_SHOWN = $('#prefill').value;
+$('#prefill').value = String(PF_WAS); $('#prefill').dispatch('change'); pump();
+ok('prefill reaches its 50 tok/s floor, and markup, bounds and field agree on it',
+   limitOf('prefill', 'min') === 50 && PF_MARKUP_MIN === 50 && PF_HELD === PF_WAS &&
+     PF_FLOOR === 50 && PF_SHOWN === '50' && limitOf('prefill', 'max') === 100000,
+   'markup min ' + PF_MARKUP_MIN + ', bound ' + limitOf('prefill', 'min') + '\u2013' +
+     limitOf('prefill', 'max') + ' \u00b7 ' + PF_WAS + ' held while typing 10, field shows ' +
+     PF_SHOWN + ' when left');
 ok('scenario change loads the new corpus', AS.tl.session.id === 'greenfield' &&
    AS.tl.items[0].tokens === AS.tl.session.bootTokens &&
    $('#transcript').children.length === AS.tl.items.length,
