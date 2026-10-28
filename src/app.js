@@ -1420,22 +1420,26 @@ $('#phase').addEventListener('keydown', (e) => {
 /* the phase bar is also a control: it steps the playhead to the next phase boundary,
    which is how you walk a session turn by turn instead of hunting the seek bar for the
    edge of a band. Boundaries come from TL.segments, the same list the bands are painted
-   from, so a click lands exactly where the colour changes. */
+   from, so a click lands exactly where the colour changes — and one step in either
+   direction always changes the phase the bar is naming. */
 function stepPhase(dir) {
   const eps = 1e-6;
   const seg = TL.segments;
+  if (!seg || !seg.length) { seek(0); return; }
   if (dir > 0) {
     const next = seg.find((s) => s.from > vTime + eps);
     seek(next ? next.from : TL.duration);
   } else {
-    /* stepping back lands on the start of the current phase unless we are already
-       within a hair of it, in which case the previous phase is next */
-    const here = seg.find((s) => vTime >= s.from - eps && vTime < s.to - eps);
-    if (here && vTime - here.from > 0.2) seek(here.from);
-    else {
-      const prev = seg.slice().reverse().find((s) => s.from < vTime - eps);
-      seek(prev ? prev.from : 0);
-    }
+    /* A boundary belongs to the band that starts there — that is what the colour under the
+       playhead says, and what phaseAt agrees with — so the start of the band you are standing
+       in is not the previous phase, it is this one at zero progress. Landing there is what
+       made a step back look dead: the heading, the colour and the wash all stayed where they
+       were, and since a queue wait or a turn gap is shorter than any fixed "close enough to
+       the boundary" threshold, from inside one it happened on every single click. So stepping
+       back clears the whole band it leaves and lands on the first instant of the phase before
+       the one the bar is naming. */
+    const here = seg.findIndex((s) => vTime < s.to - eps);
+    seek(here < 0 ? seg[seg.length - 1].from : seg[Math.max(0, here - 1)].from);
   }
 }
 

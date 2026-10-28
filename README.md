@@ -138,12 +138,17 @@ same rectangle with the neutral treatment: a *turn gap* is the harness round tri
 to neither the engine nor the tool, and before you press run and after the last token the bar
 reads `idle` and `run complete` rather than pretending something is still streaming.
 
-**Click it to step.** The bar jumps the playhead to the next phase boundary — `click` forward,
-`shift-click` back — and its right-hand hint names where a click lands (`→ prefill · 8.62s`, or
-`→ end of run` when there is nothing left). It lands on the same boundaries the seek bar is
-painted from, so it walks the run band by band: queue, prefill, decode, tool exec, the gap after
-it, the next request. That is how you compare one prefill against the next without trying to hit
-the edge of a band with the pointer; the seek bar itself still scrubs freely by click or drag.
+**Click it to step.** The bar jumps the playhead across a phase boundary — `click` forward to the
+next one, `shift-click` back to the one before the phase you are in — and its right-hand hint names
+where a click lands (`→ prefill · 8.62s`, or `→ end of run` when there is nothing left). It lands
+on the same boundaries the seek bar is painted from, so it walks the run band by band: queue,
+prefill, decode, tool exec, the gap after it, the next request. Every step leaves the phase the bar
+is naming, because a boundary belongs to the band that starts there: standing on the start of the
+band you are already inside would leave the heading, the colour and the wash untouched, and the
+control would look dead — which is what a step back used to do from inside any band shorter than
+its own threshold, that is from every queue wait and every turn gap, on every click. That is how you
+compare one prefill against the next without trying to hit the edge of a band with the pointer; the
+seek bar itself still scrubs freely by click or drag.
 
 `space` play/pause · `R` restart · `←` `→` seek one second (`shift` for five) ·
 `1`–`7` playback speed · `P` toggle settings.
@@ -310,7 +315,10 @@ bar standing over it has to name the same phase, and every state it can wear mus
 rule and a heading of its own, or it would render grey-on-grey and look like a dead control. Its
 stepping is checked the same way — click from zero must land on each band start in turn, must
 stop at the end of the run rather than wrapping, and `shift-click` must walk back the same
-boundaries, including from a boundary itself, where a naive implementation would be a no-op.
+boundaries in reverse, including from a boundary itself, where a naive implementation would be a
+no-op. It is stood in the middle of every band too, which is the case that used to fail: a step
+back had to leave the phase it was standing in and name the one before it, not stop on that band's
+own start, where the bar reads exactly as it did before the click.
 
 The transcript's follow is measured against a synthetic layout, because the shim has no box
 model: the test gives the pane a height, stacks the blocks, lets a block's reported position

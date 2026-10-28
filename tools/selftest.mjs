@@ -718,17 +718,56 @@ AS.seek(TL.duration); pump();
 ok('the hint says so at the end of the run', $('#phase .next').textContent === '→ end of run',
    $('#phase .next').textContent);
 $('#phase').dispatch('click', { shiftKey: true }); pump();
-ok('shift-click steps back a band', AS.vTime <= SEGS[SEGS.length - 1].from + 1e-6,
+ok('shift-click steps back a band', Math.abs(AS.vTime - SEGS[SEGS.length - 1].from) < 1e-6,
    'landed at ' + AS.vTime.toFixed(2) + 's, last band starts at ' + SEGS[SEGS.length - 1].from.toFixed(2) + 's');
 /* stepping back from a band start has to leave, not stay: otherwise a double press on
    a boundary is a no-op and the walk stalls */
 $('#phase').dispatch('click', { shiftKey: true }); pump();
 ok('shift-click from a band start goes to the one before',
-   AS.vTime <= SEGS[SEGS.length - 2].from + 1e-6,
+   Math.abs(AS.vTime - SEGS[SEGS.length - 2].from) < 1e-6,
    'landed at ' + AS.vTime.toFixed(2) + 's, previous band starts at ' + SEGS[SEGS.length - 2].from.toFixed(2) + 's');
 AS.seek(0); pump();
 $('#phase').dispatch('click', { shiftKey: true }); pump();
 ok('shift-click at the start cannot go below zero', AS.vTime === 0, AS.vTime.toFixed(3) + 's');
+/* the walk back has to cover the band starts the walk forward landed on, in reverse, one per
+   click and no repeats — a step that stopped on the boundary you are already standing on would
+   stall the walk in the middle of a run, where nobody is watching the clock closely enough to
+   tell a stall from a phase that simply has nothing to report */
+AS.seek(TL.duration); pump();
+const BACK = [];
+for (let i = 0; i < SEGS.length + 2; i++) { $('#phase').dispatch('click', { shiftKey: true }); pump(); BACK.push(AS.vTime); }
+ok('shift-click walks back every band start',
+   SEGS.slice().reverse().every((s, i) => Math.abs(BACK[i] - s.from) < 1e-6)
+   && BACK[SEGS.length] === 0 && BACK[SEGS.length + 1] === 0,
+   BACK.slice(0, 3).map((t) => t.toFixed(2) + 's').join(' ← ') + ' … ' + BACK[SEGS.length - 1].toFixed(2) + 's');
+/* and a step back has to land where the bar reads differently. A band boundary belongs to the
+   phase that starts there, so stopping on the start of the band you are inside leaves the
+   heading, the colour and the wash exactly as they were — which is what a step back used to do
+   from inside any band shorter than its own threshold, that is from every queue wait and every
+   turn gap, on every single click */
+const BACKFAIL = [];
+SEGS.forEach((s, i) => {
+   AS.seek(s.from + (s.to - s.from) / 2); pump();
+   const was = $('#phase').dataset.phase;
+   $('#phase').dispatch('click', { shiftKey: true }); pump();
+   const now = $('#phase').dataset.phase;
+   /* band 0 is the opening gap: there is no phase before the run, so the only landing is zero,
+      where the bar names the state before the run rather than a phase */
+   const want = i ? SEGS[i - 1] : null;
+   /* zero is the boundary into the state before the run, so the bar names idle there rather
+      than the opening gap band it has stepped onto */
+   const named = want && want.from > 1e-9 ? want.phase : 'idle';
+   if (!(Math.abs(AS.vTime - (want ? want.from : 0)) < 1e-6
+      && now === named
+      && (!want || now !== was || want.phase === s.phase))) {
+     BACKFAIL.push('from ' + s.phase + '@' + (s.from + (s.to - s.from) / 2).toFixed(2)
+       + 's landed on ' + now + '@' + AS.vTime.toFixed(2) + 's');
+   }
+});
+ok('shift-click lands on the phase before the one it named', !BACKFAIL.length,
+   BACKFAIL.slice(0, 3).join(' | ') || SEGS.length + ' bands, each landing names ' +
+   SEGS.map((s, i) => i ? SEGS[i - 1].phase : 'idle').join(' '));
+AS.seek(0); pump();
 AS.seek(0); pump();
 
 /* --- handler battery --- */
