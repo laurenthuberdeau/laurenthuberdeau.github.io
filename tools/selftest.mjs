@@ -123,6 +123,8 @@ ok('context monotonic', TL.reqs.every((r, i) => i === 0 || r.ctx >= TL.reqs[i - 
 ok('timeline monotonic', TL.reqs.every((r) => r.end >= r.decodeStart && r.decodeStart >= r.start));
 ok('items in time order', TL.items.every((it, i) => i === 0 || (it.at ?? it.latencyStart) >= (TL.items[i - 1].at ?? TL.items[i - 1].end) - 1e-9));
 ok('every request prefills real context', TL.reqs.every((r) => r.ctx > 0 && r.prefillMs > 0));
+/* the flat-curve run is a control the panel no longer renders, but it is still the
+   only thing that proves the decay curve costs what the curve claims to cost */
 ok('decay curve costs time', !decayExpected || TL.duration > TL.flatDuration, TL.duration.toFixed(2) + 's vs flat ' + TL.flatDuration.toFixed(2) + 's');
 ok('flat run never slower', TL.flatDuration <= TL.duration + 1e-9);
 ok('transcript rendered', $('#transcript').children.length === TL.items.length, TL.items.length + ' blocks');
@@ -303,6 +305,88 @@ $('#shareUrl').dispatch('focus');
 guard('copy', () => $('#copy').dispatch('click'));
 ok('handler battery clean', errors.length === 0, errors.slice(0, 3).join(' ;; '));
 ok('config survived handler battery', AS.config.prefill > 0 && AS.config.decode > 0 && AS.tl.duration > 0);
+
+/* --- corpus sweep ---
+   everything above holds for whichever scenario the URL happened to pick; the
+   corpus is the thing that has to stay well-formed as scenarios are added, so
+   walk every entry in the picker and check the invariants a new corpus must
+   satisfy: role shape, enough requests to be a session, context that only ever
+   shrinks at a compaction, and a name whose phase split matches the corpus data. */
+const ROLES = new Set(['user', 'assistant', 'tool', 'compact']);
+const keepSession = AS.config.session;
+const corpusBad = [];
+for (const s of AS.sessions) {
+  AS.config.session = s.id; AS.rebuild(); pump();
+  const T = AS.tl, P = AS.profileStats(s);
+  const cmp = T.items.filter((i) => i.compact);
+  const why = [];
+  if (!s.steps[0] || s.steps[0].role !== 'user') why.push('does not open with a user turn');
+  const last = s.steps[s.steps.length - 1];
+  if (!last || last.role !== 'assistant' || last.tool) why.push('does not close with a tool-free assistant turn');
+  if (s.steps.some((x) => !ROLES.has(x.role) || !String(x.text || '').trim())) why.push('bad role or empty text');
+  /* every tool result must answer a tool call, and the call must name the tool that answered */
+  s.steps.forEach((x, i) => {
+    if (x.role !== 'tool') return;
+    const prev = s.steps[i - 1];
+    if (!prev || prev.role !== 'assistant' || !prev.tool) why.push('tool result at ' + i + ' answers no call');
+    else if (x.name !== prev.tool.name) why.push('tool at ' + i + ' is ' + x.name + ' but the call was ' + prev.tool.name);
+  });
+  if (P.requests < 3) why.push('only ' + P.requests + ' requests');
+  if (P.peakCtx < (s.bootTokens || 0)) why.push('peak context below boot');
+  /* the split the summary quotes has to be the split the corpus measures */
+  const r = P.prefillMs / Math.max(1e-9, P.decodeMs);
+  if (!/^[\d.]+:1$/.test(s.split || '')) why.push('no measured phase split (got ' + s.split + ')');
+  else if (Math.abs(parseFloat(s.split) - r) > Math.max(0.06, r * 0.12))
+    why.push('split ' + s.split + ' but the corpus runs at ' + r.toFixed(2));
+  /* model shape at the live settings, not just the corpus text */
+  if (!T.reqs.every((r, i) => i === 0 || r.ctx >= T.reqs[i - 1].ctx
+      || cmp.some((c) => c.at >= T.reqs[i - 1].end && c.at <= r.start))) why.push('context shrinks outside a compaction');
+  if (!T.reqs.every((r) => r.ctx > 0 && r.prefillMs > 0 && r.end >= r.decodeStart)) why.push('degenerate request');
+  ok('corpus ' + s.id, why.length === 0, s.name + ' · ' + s.steps.length + ' steps · ' + P.requests
+     + ' reqs · peak ' + fmt(P.peakCtx) + ' · pf ' + Math.round(P.prefillMs / 100) / 10 + 's dk '
+     + Math.round(P.decodeMs / 100) / 10 + 's tool ' + Math.round(P.toolMs / 100) / 10 + 's');
+  if (why.length) { corpusBad.push(s.id); errors.push(s.id + ': ' + why.join('; ')); }
+}
+AS.config.session = keepSession; AS.rebuild(); pump();
+ok('corpus sweep covered the picker', AS.sessions.length >= 4 && corpusBad.length === 0,
+   AS.sessions.length + ' scenarios, ' + corpusBad.length + ' rejected');
+
+/* the summary is the panel's first card and its first two rows are the ones that
+   carry it, so pin both: the card drifting back below the ledger, or the rows being
+   reordered away from total + phase split, is a regression rather than a redesign */
+const PANEL = html.slice(html.indexOf('<aside class="panel"'), html.indexOf('</aside>'));
+ok('summary is the first card in the panel',
+   PANEL.indexOf('id="summary"') >= 0 && PANEL.indexOf('id="summary"') < PANEL.indexOf('id="prefill"'),
+   'summary at ' + PANEL.indexOf('id="summary"') + ', engine at ' + PANEL.indexOf('id="prefill"'));
+const DL = $('#summary');
+/* the UI probes above leave whatever state they last tested — a different corpus, the
+   cache flipped — so restore the URL profile before checking markup that profile is
+   supposed to produce, or the assertions describe the test rather than the page */
+$('#session').value = TL.session.id; $('#session').dispatch('change');
+$('#cache').dispatch('change', { target: { checked: TL.params.cache } }); pump();
+ok('URL profile restored', AS.tl.session.id === TL.session.id && !!AS.config.cache === !!TL.params.cache,
+   AS.tl.session.id + ' · cache ' + (AS.config.cache ? 'on' : 'off') + ' · ' + AS.tl.duration.toFixed(1) + 's');
+ok('summary leads with total and the phase split',
+   DL.children[0].textContent === 'total' && DL.children[2].textContent === 'prefill : decode'
+   && DL.children[1].classList.contains('hi') && DL.children[3].classList.contains('hi'),
+   DL.children[0].textContent + ' / ' + DL.children[2].textContent);
+ok('the highlighted rows are a pair', DL.descendants().filter((e) => e.tagName === 'DD' && e.classList.contains('hi')).length === 2);
+/* the phase rows carry their tokens next to their time — "125k tok (2m 27s)" — which is
+   what keeps the card short enough to read at a glance without a token row of its own */
+ok('phase rows pair tokens with time',
+   /^\S+ tok \(.+\)$/.test(DL.children[5].textContent) && /^\S+ tok \(.+\)$/.test(DL.children[7].textContent),
+   DL.children[4].textContent + ' ' + DL.children[5].textContent + '  |  ' +
+   DL.children[6].textContent + ' ' + DL.children[7].textContent);
+/* every cell of every row is titled, so a row added later without a hover note
+   fails here instead of being the one thing on the page nobody can explain */
+ok('every summary row explains itself on hover',
+   DL.children.length % 2 === 0 && DL.children.every((c) => (c.getAttribute('title') || '').split(' ').length >= 6),
+   DL.children.filter((c) => c.getAttribute('title')).length + '/' + DL.children.length + ' cells titled');
+/* the savings row belongs to the cache: with the toggle off it would sit at 0 ms
+   forever, so its presence must track the cache rather than the run */
+ok('cache savings row follows the cache toggle',
+   DL.children.some((c) => c.textContent === 'prefill saved by cache') === !!AS.config.cache,
+   AS.config.cache ? 'shown with the cache on' : 'hidden with the cache off');
 
 console.log('\nstats: ' + JSON.stringify(S, (k, v) => (typeof v === 'number' ? +v.toFixed(1) : v)));
 console.log('ledger:');

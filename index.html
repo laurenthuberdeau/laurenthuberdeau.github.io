@@ -184,6 +184,14 @@
   dl.summary { margin: 0; display: grid; grid-template-columns: 1fr auto; gap: 2px 8px; font-size: 11px; }
   dl.summary dt { color: var(--fg-dimmer); }
   dl.summary dd { margin: 0; text-align: right; color: var(--fg); font-variant-numeric: tabular-nums; }
+  /* the summary sits at the top of the panel because it is the thing you come back to
+     after every settings change, and the first two rows are what it is for: where the
+     wall time went, and the split between the two faces of inference */
+  dl.summary dt.hi { color: var(--fg-dim); font-weight: 600; }
+  dl.summary dd.hi { font-weight: 600; }
+  /* every row has a hover note, so say so with the cursor rather than leaving the
+     definitions undiscoverable; same affordance as the seek bands */
+  dl.summary [title] { cursor: help; }
   .kbd { border: 1px solid var(--border-2); border-bottom-width: 2px; border-radius: 4px; padding: 0 4px; color: var(--fg-dim); font-size: 11px; }
   @media (max-width: 900px) {
     main { flex-direction: column; overflow-y: auto; }
@@ -231,6 +239,11 @@
   <section class="transcript" id="transcript"></section>
   <aside class="panel" id="panel">
     <div class="card">
+      <h2>Session summary</h2>
+      <dl class="summary" id="summary"></dl>
+    </div>
+
+    <div class="card">
       <h2>Engine</h2>
       <div class="row"><label for="prefill">prefill speed</label><input id="prefill" type="number" min="500" step="500"><span class="unit">tok/s</span></div>
       <input id="prefillRange" type="range" min="0" max="100" step="0.5">
@@ -264,11 +277,6 @@
     <div class="card">
       <h2>Request ledger</h2>
       <table id="ledger"></table>
-    </div>
-
-    <div class="card">
-      <h2>Session summary</h2>
-      <dl class="summary" id="summary"></dl>
     </div>
 
     <div class="card">
@@ -395,7 +403,214 @@ const SESSIONS = [
 'batch 1142 replay: peak rss 640MB (was 3.9GB), frames 9600 processed\nexport completed, EXPORT_OK\nwall 94% of baseline, within noise' },
       { role: 'assistant', text: 'Peak rss is down from 3.9GB to 640MB on the same replay log, EXPORT_OK still holds, and wall time is within 6% because the window flush overlaps decode with I/O. The leak is fixed at the source rather than masked with a larger batch. Ship it — the same accumulation pattern is worth a grep across the repo later, but the exporter is the only hot path for tonight.' }
     ]
-  }
+  },
+  {
+    id: 'sweep',
+    name: 'batch edits · cache showcase',
+    bootTokens: 5400,
+    steps: [
+      { role: 'user', text: 'Public API rename for 0.9: SessionHandle.close() becomes SessionHandle.shutdown(). It has to move everywhere in one commit — src, tests, the docs snippets — with the deprecation shim in exactly one place and nothing internal still calling close() afterwards. Leave third_party/ alone, the vendored client is synced from upstream and we do not patch it.' },
+      { role: 'assistant', text:
+'Before I touch a hundred-plus call sites I want the shape of the blast radius, because the interesting question is not how many .close() calls there are, it is how many of them are actually calls on a handle. A socket has a close, a file has a close, the vendored client has a close, and our own FakeHandle in conftest has one that is part of a duck-typed protocol. If I blind-replace on the method name I will rewrite two of those three and break things that were never part of the API. So the first grep is deliberately wide, and the second one is cheap once I know what the count is made of.',
+        tool: { name: 'Grep', args: 'rg -n "\\.close\\(\\)" --glob "!third_party/**" src tests docs | wc -l && rg -n "\\.close\\(\\)" --glob "!third_party/**" -M 60 src tests docs' } },
+      { role: 'tool', name: 'Grep', execMs: 240, simTokens: 8600, text:
+'112\nsrc/agentic/handle.py:88:        self._h.close()\nsrc/agentic/pool.py:214:                h.close()\nsrc/agentic/transport.py:402:        self.sock.close()\ntests/conftest.py:61:    def close(self):\ndocs/guide/session.md:44:    handle.close()\n… 107 more (elided)' },
+      { role: 'assistant', text:
+'112 hits, and of those 105 are handle receivers by name — handle, h, sess, session — across 27 files. The other 7 are the ones I expected: three sockets in the transport, one in the vendored client that leaked past the glob, and three in the test doubles. I am not going to hand-edit 105 sites and I am not going to hand-review them either; the codemod is the review, because it prints every site it rewrites with a line of context and refuses to touch a receiver it cannot narrow to a handle. Anything it skips is reported, so a silent miss is not possible.',
+        tool: { name: 'Bash', args: 'python tools/codemod_rename.py --old close --new shutdown --receiver-handle --glob "src/**/*.py" --glob "tests/**/*.py"' } },
+      { role: 'tool', name: 'Bash', execMs: 2400, text:
+'27 files rewritten · 105 sites\nskipped 7 (receiver not provably a handle):\n  src/agentic/transport.py:402 sock\n  src/agentic/transport.py:455 sock\n  src/agentic/transport.py:501 sock\n  third_party/upstream/client.py:88 (glob excluded)\n  tests/conftest.py:61 FakeHandle.close\n  tests/doubles.py:29 RecordingHandle.close\n  tests/doubles.py:33 RecordingHandle.close\ngit diff --stat: 27 files changed, 105 insertions(+), 105 deletions(-)' },
+      { role: 'assistant', text:
+'The skip list being exactly the seven I predicted is the signal that the receiver heuristic is trustworthy rather than merely quiet. Three of them still have to move: FakeHandle and RecordingHandle implement the handle protocol, so if the protocol method is called shutdown() they have to name it shutdown() too, or every test that passes a double into a real code path fails on AttributeError. The sockets and the vendored client stay — those are not our API and 0.9 does not get to rename them. Four hand edits then, in one change so the tree is never in a state where the protocol and the doubles disagree. The shim goes on SessionHandle.close itself rather than on a module-level alias, because the deprecation has to fire for handles taken from the pool as well as handles built directly, and the pool returns the same class, so one method covers both. It warns with DeprecationWarning rather than a custom subclass so the default filter behaviour is what users already know.',
+        tool: { name: 'Edit', args: 'src/agentic/handle.py · add shutdown(), deprecate close() · tests/conftest.py, tests/doubles.py · rename protocol method · docs/guide/*.md · snippets' } },
+      { role: 'tool', name: 'Edit', execMs: 90, text:
+'--- a/src/agentic/handle.py\n+++ b/src/agentic/handle.py\n@@\n-    def close(self):\n+    def shutdown(self, drain=True):\n+        """Finish in-flight work and release the transport. Idempotent."""\n         with self._lock:\n             ...\n+\n+    def close(self):  # pragma: no cover - deprecated\n+        warnings.warn(\n+            "SessionHandle.close() is deprecated; use shutdown()."\n+            " Removed in 0.11.", DeprecationWarning, stacklevel=2)\n+        return self.shutdown()\n--- a/tests/doubles.py\n+++ b/tests/doubles.py\n@@\n-    def close(self):\n+    def shutdown(self, drain=True):\n         self._closed = True' },
+      { role: 'assistant', text:
+'Full suite rather than the touched subset. A rename this wide fails in the places nobody thought of — a getattr in the plugin host, a string in a fixture, a doctest in the guide that pytest collects — and those failures are cheap to find now and expensive to find in the release candidate.',
+        tool: { name: 'Bash', args: 'pytest -q --doctest-glob="*.md" -p no:randomly' } },
+      { role: 'tool', name: 'Bash', execMs: 12000, simTokens: 18000, text:
+'1 failed, 1183 passed, 4 skipped in 96.41s\nFAILED docs/guide/lifecycle.md::lifecycle.md:12\n  AttributeError: handle has no attribute close. Did you mean: _closed?\n… 1183 passing tests (elided)' },
+      { role: 'assistant', text:
+'The doctest in the lifecycle guide, which is the case the grep caught and the codemod correctly refused to guess about: the snippet calls close() on a real handle and then asserts on the returned future, and the shim returns shutdown() so the call itself is fine — what broke is that the snippet was written against 0.7 semantics where close() returned the drain future and the doctest asserts on it. Fixing the snippet to shutdown() and adding the version marker the other guide snippets already carry, so a doc build against an older pin skips it instead of failing.',
+        tool: { name: 'Edit', args: 'docs/guide/lifecycle.md · snippet uses shutdown()' } },
+      { role: 'tool', name: 'Edit', execMs: 70, text:
+'--- a/docs/guide/lifecycle.md\n+++ b/docs/guide/lifecycle.md\n@@\n-<!-- since 0.7 -->\n-call `.close()` on the handle\n-    >>> handle.close().result()\n+<!-- since 0.9 -->\n+call `.shutdown()` on the handle\n+    >>> handle.shutdown().result()' },
+      { role: 'assistant', text:
+'Re-running just what the two fixes can reach, plus the deprecation contract, rather than the whole suite again.',
+        tool: { name: 'Bash', args: 'pytest -q docs/guide tests/test_deprecation.py tests/test_handle.py' } },
+      { role: 'tool', name: 'Bash', execMs: 3600, text:
+'41 passed in 8.12s\ndeprecation: close() -> DeprecationWarning at stacklevel 2 (caller line reported)\nclose() on a pooled handle: same warning, same return value as shutdown()' },
+      { role: 'assistant', text:
+'Done, and the whole thing is one commit. What moved: 105 call sites across 27 files by codemod, two test doubles and one protocol method by hand, four doc snippets, and the deprecation shim on SessionHandle.close, which warns at the caller line and forwards to shutdown() so pooled handles behave identically. What did not move and why: three socket closes in transport.py and the vendored client, neither of which is our API. Tests: the deprecation suite asserts the warning class, the stacklevel, and that close() and shutdown() return the same future; the doc snippets run under the doctest glob so a stale snippet is a build failure instead of a bug report.\n\nTwo things I left for a follow-up rather than folding into a rename commit. The protocol method on FakeHandle is still the only place that documents the handle contract structurally, which wants a real Protocol class with shutdown() in it. And the codemod only understands receiver names, so a handle reached through an attribute like self.active_handle was reported as skipped rather than rewritten — it printed those, I checked them by hand, and there were none, but the next person to run it will not know that unless we say so in the tool docstring.' }
+    ]
+  },
+  {
+    id: 'oncall',
+    name: 'production incident · context spike',
+    bootTokens: 9800,
+    steps: [
+      { role: 'user', text: 'Paged: checkout p99 is 4.8s and we are burning 38% of the error budget in five minutes, us-east only, eu-west is clean. Get us back under SLO first and explain afterwards — I am on the bridge, send me the mitigation as a one-liner when it lands.' },
+      { role: 'assistant', text:
+'Us-east only with identical code in both regions says either data, traffic, or infrastructure, and the first thing I want is whether this is compute-bound or waiting-bound. If the API pods are pinned on CPU it is a work problem; if they are idle and blocked, something downstream is slow and killing pods makes it worse by shrinking the connection pool. Pods, top, and the node view answer that in one shot.',
+        tool: { name: 'Bash', args: 'kubectl get pods -n checkout -o wide | head -40; kubectl top pods -n checkout --sort-by=memory | head -12; kubectl get events -n checkout --sort-by=.lastTimestamp | tail -15' } },
+      { role: 'tool', name: 'Bash', execMs: 2600, simTokens: 2400, text:
+'NAME                      READY  STATUS   RESTARTS  AGE   NODE\ncheckout-api-7d9f8-2kq4   2/2    Running  0         41d   ip-10-4-22-7\ncheckout-api-7d9f8-9x1c   2/2    Running  3         41d   ip-10-4-22-7\ncheckout-api-7d9f8-4f2b   2/2    Running  0         41d   ip-10-4-31-2\n… 10 pods (elided)\n2kq4  4.62GiB  118%   9x1c  4.51GiB  114%   4f2b  0.71GiB  22%\nLAST SEEN  Type  Reason               message\n2m       Warn  EvictionThresholdMet  node ip-10-4-22-7 memory available 312Mi' },
+      { role: 'assistant', text:
+'Two pods on one node at 4.6GiB and 118% CPU while a third pod on a different node sits at 700MiB. That is not load skew — the balancer is even, ten pods, one of the nodes is the problem — it is two pods holding something the others are not, and the node is one eviction threshold away from taking their neighbours down with them. Restarting is the wrong first move: whatever they are holding gets rebuilt by the next request and we lose the evidence at the same time. So the dump comes first, and all of it at once, because on a bridge I would rather read one big picture in a single round trip than page through six commands while the budget burns. Heap top, the live statement list, the top of pg_stat_statements by mean time, and the plan for whatever ends up on top.',
+        tool: { name: 'Bash', args:
+'for p in 2kq4 9x1c; do kubectl exec -n checkout checkout-api-7d9f8-$p -- curl -s "localhost:8080/debug/pprof/heap?debug=1" | head -c 300000; done; ' +
+'psql "$PRIMARY" -c "select pid, state, now()-query_start as dur, left(query,120) from pg_stat_activity order by 3 desc limit 25"; ' +
+'psql "$PRIMARY" -c "select calls, mean_exec_time, rows, left(query,200) from pg_stat_statements order by mean_exec_time desc limit 12"; ' +
+'psql "$PRIMARY" -c "explain (analyze, buffers) SELECT * FROM ledger_entries WHERE account_id = 8812 ORDER BY posted_at DESC"' } },
+      { role: 'tool', name: 'Bash', execMs: 8200, simTokens: 84000, text:
+'heap: 3.14GB in use, us-east pods only\n  1.82GB  report.build_statement_rows (result materialisation)\n  0.41GB  pyarrow.record_batch staging\npg_stat_activity: 6 backends state=active, dur 00:02:41 .. 00:04:58\n  SELECT * FROM ledger_entries WHERE account_id=$1 ORDER BY posted_at DESC\npg_stat_statements top:\n  calls=4182  mean_exec_time=1942ms  rows=4,118,402  SELECT * FROM ledger_entries ...\nexplain analyze:\n  Sort  (actual time=184.2..1841.2 rows=4118402 loops=1)\n        Sort Method: external merge  Disk: 1248kB -> 1.2GB\n    ->  Seq Scan on ledger_entries  (actual rows=4118402 loops=1)\n          Filter: (account_id = 8812)  Rows Removed by Filter: 408765799\n… 6.2k lines of heap profile (elided)' },
+      { role: 'assistant', text:
+'Diagnosis, and it is one line of that plan: Seq Scan on ledger_entries, 412 million rows read to return 4.1 million, an external merge sort spilling to disk, and 1.8GB of Python holding the result rows per request. Two consequences follow. The primary is spending four seconds of work per report request, and every one of those requests parks about a gigabyte of response rows in the pod heap; two concurrent callers is the eviction threshold, which is why it looks like a memory incident and a latency incident at the same time. The index that makes this a millisecond lookup is idx_ledger_account_posted, and it exists in eu-west — that is the whole answer to why only one region is on fire. Migration 0141 shipped there and not here.\n\nMitigation order is by what stops the burn rather than what fixes the cause: kill the six report backends so the primary stops spending four seconds per request, then point /reports at the replica so the retries do not land on the primary again. Both are one command to reverse and neither touches the API pods, so the evidence stays on the heap if this is wrong.',
+        tool: { name: 'Bash', args: 'psql "$PRIMARY" -c "select pg_terminate_backend(pid) from pg_stat_activity where query ilike \'%ledger_entries%\' and state=\'active\' and now()-query_start > interval \'5 seconds\'"; flagctl set checkout.reports.datasource replica --region us-east --reason INC-4471' } },
+      { role: 'tool', name: 'Bash', execMs: 1400, text:
+'pg_terminate_backend — 6 rows\nflag checkout.reports.datasource = replica (us-east)   rollout 11.8s   no API pod restarts\nreplica lag 0.4s -> 0.9s' },
+      { role: 'assistant', text:
+'Mitigation landed, but a flag flip is a hypothesis until the SLO window closes. What I need to believe is that the burn rate is back to baseline and the replica has not become the new bottleneck, so I wait out a five minute window rather than reading one instantaneous sample — the retry storm from the incident is still inside the p99 for the first minute and I would rather wait than declare victory on a stale number.',
+        tool: { name: 'Bash', args: 'sleep 300; prom -q \'histogram_quantile(0.99, checkout_request_duration)\' -r 5m; prom -q \'sum(rate(checkout_5xx[5m]))\'; kubectl top pods -n checkout --sort-by=memory | head -4; prom -q \'pg_replication_lag_seconds\'' } },
+      { role: 'tool', name: 'Bash', execMs: 302000, text:
+'p99 over last 5m: 0.41s  (SLO 0.8s)\n5xx rate 0.02%   error budget burn 0.4%/h  (was 38%/5m)\n2kq4 0.78GiB 19%   9x1c 0.74GiB 17%   4f2b 0.70GiB 21%\nreplica lag 1.1s   read pool saturated 0.6%' },
+      { role: 'assistant', text:
+'Under SLO and the heap is gone — both pods back to ~750MiB the moment the report work stopped, which confirms the retention was per-request rather than a leak, and no pod restarts were needed.\n\nBridge one-liner: p99 0.41s, burn 0.4%/h, /reports on the replica in us-east, primary idle, no restarts, root cause is a missing index, not a code regression.\n\nWhat happened. Yesterday\'s release added the account statement view, which calls report.build_statement_rows. That function runs SELECT * FROM ledger_entries WHERE account_id = ? ORDER BY posted_at DESC and materialises the whole result set in Python before it renders anything. In eu-west that is an index scan over a few thousand rows. In us-east the index does not exist, so the planner seq-scans 412M rows, sorts 4.1M of them across a disk spill, and the application then holds roughly a gigabyte per request. Four thousand calls at 1.9s each is the primary; two concurrent callers is 2GB of pod heap; the node threshold is the page. Nothing about the code is region specific except the deploy flag: us-east is the only region in the canary cohort, and that cohort runs with --skip-migrations, so the release reported success while the schema stayed behind.\n\nWhat actually fixes it, and not tonight. CREATE INDEX CONCURRENTLY on ledger_entries (account_id, posted_at DESC) is 35-40 minutes at this table size and needs a change window. Run it as migration 0141 rather than as an ad-hoc statement, otherwise the regions drift again and we are back here next quarter with a worse explanation. Separately, build_statement_rows should stream batches instead of materialising, which caps pod heap at one batch no matter what the planner decides; that is a correctness fix under load rather than a performance nicety, and it is the thing that stops a missing index from becoming an OOM anywhere.\n\nWhat I want in CI. A release gate that fails if any region has unapplied migrations — the deployer currently prints a green check while skipping them, which is silent schema skew between regions. An assertion that every ORDER BY pair introduced by a new query has a matching index in every region\'s schema dump. And a page on heap-in-use per request rather than heap in use, so this shape pages at one gigabyte of retention per request instead of waiting for an eviction.' }
+    ]
+  },
+  {
+    id: 'migration',
+    name: 'backfill · tool-bound',
+    bootTokens: 8100,
+    steps: [
+      { role: 'user', text: 'Tonight\'s window: add ledger_entries.currency as NOT NULL DEFAULT \'USD\' on the 412M row table, plus an index so the currency filter stops seq-scanning. Nothing may hold an ACCESS EXCLUSIVE lock for more than a second — the checkout writers live on that table all night. Plan it, run it, verify it, and write the rollback into the change ticket.' },
+      { role: 'assistant', text:
+'The plan comes before anything touches the table, and I want lock modes and durations rather than just SQL. Two things make this riskier than it looks: the table is written continuously, so any ACCESS EXCLUSIVE acquisition queues every writer behind it while it waits, and a DEFAULT on a large table is only free on the version we run — on the older one it rewrites 412M rows and takes the table down with it. Dry run first, so the numbers come from the planner and not from my recollection.',
+        tool: { name: 'Bash', args: 'pg_migrate --plan migrations/0143_ledger_currency.py --dry-run --explain-locks' } },
+      { role: 'tool', name: 'Bash', execMs: 45000, simTokens: 3400, text:
+'plan 0143_ledger_currency (3 statements)\n  1  ALTER TABLE ledger_entries ADD COLUMN currency text NOT NULL DEFAULT \'USD\'\n       ACCESS EXCLUSIVE · estimated hold 0.6s · table rewrite: NO (pg11+ attmissingval)\n  2  CREATE INDEX CONCURRENTLY idx_ledger_currency ON ledger_entries (currency, posted_at)\n       SHARE UPDATE EXCLUSIVE · estimated 38m · does not block writers\n  3  ALTER TABLE ledger_entries SET (autovacuum_vacuum_scale_factor = 0.02)\n       SHARE UPDATE EXCLUSIVE · instant\nenvironment\n  writers on table: 6 backends, 41 tx/s\n  largest index build this window: 41m (0137)\n  free disk for index + temp: 1.9TB, needed 214GB\n  RECOMMENDATION split into two phases: the lock-sensitive statement alone, then the concurrent build' },
+      { role: 'assistant', text:
+'Two changes to the plan, both forced by the dry run. First: that 0.6s estimate is the hold once the lock is granted and says nothing about the wait to acquire it, and while it waits every writer is queued behind it. So the ALTER runs with lock_timeout at 250ms and retries until it wins the race, which bounds the worst case for the checkout path at a quarter second instead of at whatever the queue happens to look like at two in the morning. Second: the concurrent build cannot run inside a transaction and must not sit in the same statement group as the ALTER, because a group retry would take the lock again. Splitting into phases also makes the rollback honest — phase one has a one-line inverse, phase two has a drop.',
+        tool: { name: 'Bash', args: 'pg_migrate --apply migrations/0143_ledger_currency.py --phase add-column --lock-timeout 250ms --max-retries 40' } },
+      { role: 'tool', name: 'Bash', execMs: 31000, simTokens: 1800, text:
+'attempt 1  lock_timeout after 251ms (2 writers queued ahead)  retry in 1.8s\nattempt 2  acquired\nALTER TABLE ... ADD COLUMN currency text NOT NULL DEFAULT \'USD\'   0.41s\n  table rewrite: none (attmissingval set)\n  ACCESS EXCLUSIVE held 0.41s · longest writer block observed 0.66s\nvalidate: 412,884,201 rows · currency IS NULL = 0 · default coverage 100%\nphase add-column OK · 0143 recorded in schema_migrations' },
+      { role: 'assistant', text:
+'Column is in and no writer was blocked longer than the timeout plus the hold, which was the constraint that mattered. Now the build, which is the long one: 35-40 minutes, does not block writers, and can leave an INVALID index if it dies partway through — and an invalid index still costs write amplification until it is dropped and rebuilt. So the end check is not whether the index exists but whether it is valid, and I would rather watch it at minute intervals than discover at 4am that it gave up at minute six.',
+        tool: { name: 'Bash', args: 'pg_migrate --apply migrations/0143_ledger_currency.py --phase build-index --watch 60s' } },
+      { role: 'tool', name: 'Bash', execMs: 240000, simTokens: 5200, text:
+'[00:00] phase build-index start · 412,884,201 rows · 214GB estimated\n[05:12] 41M tuples · writers unaffected · max query wait 12ms\n[19:44] 168M tuples · replica lag 4.2s (warn at 10s)\n[37:11] index scan complete, second table scan for uniqueness validation\n[37:44] idx_ledger_currency valid=true · size 6.4GB\nCREATE INDEX CONCURRENTLY OK  37m44s\nINVALID indexes: none\nphase 3 applied (autovacuum scale_factor 0.02)\nlongest writer block during build: 12ms' },
+      { role: 'assistant', text:
+'Verify against the thing the change was for rather than that the objects exist: the currency filter has to stop seq-scanning, and the planner has to pick the new index for the query shapes in the codebase and not for the one I typed by hand. ANALYZE first, because a fresh index on stale statistics is the classic way for a successful migration to look like it did nothing.',
+        tool: { name: 'Bash', args: 'psql "$PRIMARY" -c "ANALYZE ledger_entries (currency, posted_at)"; pg_verify --queries reports/queries.sql --expect-index idx_ledger_currency; pg_bench --scenario currency_filter --runs 200; pg_stat_reset --scope=ledger_entries' } },
+      { role: 'tool', name: 'Bash', execMs: 95000, simTokens: 2600, text:
+'ANALYZE OK · 30000 sample rows\nreports/queries.sql: 12 queries · 11 use idx_ledger_currency · 1 Seq Scan\n  SEQ SCAN  reports/queries.sql:88  WHERE currency <> \'USD\'\n          expected: a negation is not index-usable, planner is correct\ncurrency_filter p95: 8.4s -> 41ms   (200 runs)\nindex scans 99.7% · idx scans 2 of 612 · no INVALID\nreplica lag peak 3.1s during build, 0.5s now\nindex size 6.4GB · bloat estimate 0%\nwriters during verify: 40.8 tx/s (baseline 41.2)' },
+      { role: 'assistant', text:
+'Done, on time, inside the window, with no writer blocked longer than 660ms at any point. Three objects: the column, added without a rewrite because the DEFAULT is a constant and pg11 stores it in the catalog, which is the whole reason the ALTER took 0.41s instead of 40 minutes; idx_ledger_currency, valid, 6.4GB, 37m44s; and an autovacuum scale factor of 0.02 on the table, because a 412M row table that gets a new column filtered in eleven queries will have dead tuples concentrated exactly where the new index lives, and I would rather vacuum it often than plan a maintenance window for it.\n\nRollback, in reverse order, and this goes in the ticket.\n\n  1  DROP INDEX CONCURRENTLY IF EXISTS idx_ledger_currency;\n       ~6 minutes, SHARE UPDATE EXCLUSIVE, does not block writers. Repeat until it reports the index gone; a cancelled CONCURRENTLY drop leaves the index behind.\n  2  ALTER TABLE ledger_entries ALTER COLUMN currency DROP DEFAULT;\n     ALTER TABLE ledger_entries ALTER COLUMN currency DROP NOT NULL;\n       Both metadata-only, instant, ACCESS EXCLUSIVE but sub-second because neither rewrites. This is the state the application runs against if it stops reading currency at all.\n  3  ALTER TABLE ledger_entries DROP COLUMN currency;\n       ACCESS EXCLUSIVE, sub-second, reclaims nothing until vacuum. It is also not the rollback you want first: it is irreversible without a restore, so steps 1 and 2 are the rollback and step 3 is a deliberate decision made the next morning.\n  4  ALTER TABLE ledger_entries RESET (autovacuum_vacuum_scale_factor);\n       Metadata only.\n\nThe one-way door is any write that puts a real value into currency. Once the backfill job fills non-default values, dropping the column destroys data, so the backfill has to be re-runnable from its own source before step 3 is even discussed.\n\nWatch-list for the next 24 hours. The single Seq Scan in reports/queries.sql is correct and should stay — a <> predicate cannot use the index — but it is one query doing a full scan on a hot table and it deserves a rewrite to an explicit allow-list of non-USD currencies, which would use the index and stop touching the other 411M rows. Replica lag peaked at 4.2 seconds mid-build against a 10 second warning, so there is headroom, but the lag curve is the thing to look at if anyone runs a second CONCURRENTLY build in this window. And the writer rate is unchanged at 40.8 tx/s against a 41.2 baseline, which is the number that says the night went to plan.' }
+    ]
+  },
+  {
+    id: 'refactor',
+    name: 'monolith split · steady grind',
+    bootTokens: 12500,
+    steps: [
+      { role: 'user', text: 'Split billing/monolith.py into billing/invoice/ and billing/tax/ behind ports. No behaviour change, no big bang — both teams land on main every day, so each step has to be green on its own and I need to be able to stop after any of them and ship. Start with the tax seam because that is where the correctness lives.' },
+      { role: 'assistant', text:
+'A split like this is decided before the first file moves, so the first pass is reading the whole module and looking for the seams that already exist rather than inventing ones. What I am looking for specifically: state that only one side touches, helpers that both sides call, and any place where tax logic reaches into invoice state or the other way round, because those are the edges that have to become ports or the split is cosmetic. Reading it whole rather than grepping around it — a seam guessed from signatures is how you end up with two packages that share a mutable dict.',
+        tool: { name: 'Read', args: 'billing/monolith.py' } },
+      { role: 'tool', name: 'Read', execMs: 260, simTokens: 40000, text:
+'1\t"""Billing. Everything, in one place, since 2019."""\n…\n212\tTAX_TABLES = {}          # module-level, mutated by load_tax_table()\n288\tdef compute_tax(invoice, jurisdiction, fx):\n331\t    invoice.gross = …          # writes through to the caller\'s invoice\n402\t    rate = TAX_TABLES[jurisdiction][invoice.product_class]\n1180\tdef render_invoice(...)\n1455\tdef recalculate_after_refund(...)\n…\n3\tseams observed: tax tables (pure), invoice rendering (io only), refund replay (touches both)\n5,112 lines · 41 top-level functions · 3 module-level singletons (elided)' },
+      { role: 'assistant', text:
+'Two things in that read decide the shape of the change. compute_tax writes through to its argument at line 331 — invoice.gross = … — so invoice state is an implicit input and output of the tax path, and any tax package that took an invoice object would own half of invoice\'s invariants. That becomes a value: the tax port takes a TaxableLine list and returns TaxAmounts, and nothing crosses the boundary in the other direction. Second, TAX_TABLES is a module-level dict mutated by load_tax_table, so today tax behaviour depends on whether something called the loader — a hidden dependency the split has to make explicit, so it becomes an injected TaxTables and the loader becomes a constructor.\n\nCommit one is therefore only the boundary: the ports, the value types, an empty billing/tax package that re-exports what exists through a shim, and the import-linter rule I want enforcing the split from now on. That rule is vacuously true on today\'s tree, which is worth knowing before I start — the edge I want to forbid has never been crossed, so I can turn it on in the first commit and let it defend the split, rather than adding it at the end when a violation would be someone\'s weekend. Nothing moves yet, which makes commit one reviewable in ten minutes and makes every later commit a pure move: the only kind of commit a two-team file can absorb.',
+        tool: { name: 'Edit', args: 'billing/tax/ports.py (new) · TaxableLine, TaxAmounts, TaxTables protocol · billing/tax/__init__.py · re-export shim · importlinter.toml · contract tax_does_not_import_invoice' } },
+      { role: 'tool', name: 'Edit', execMs: 150, simTokens: 2400, text:
+'--- /dev/null\n+++ b/billing/tax/ports.py\n@@\n+@dataclass(frozen=True)\n+class TaxableLine:\n+    product_class: str\n+    amount: Decimal\n+    jurisdiction: str\n+\n+@dataclass(frozen=True)\n+class TaxAmounts:\n+    gross: Decimal\n+    tax: Decimal\n+    by_jurisdiction: Mapping[str, Decimal]\n+\n+class TaxTable(Protocol):\n+    def rate(self, product_class: str, jurisdiction: str) -> Decimal: ...\n+…\n… 22 more lines (elided)\nlint-imports --config importlinter.toml: 1 contract KEPT, 0 broken\n  tax_does_not_import_invoice: 0 violations (vacuous — no billing.tax module imports billing.invoice yet)' },
+      { role: 'assistant', text:
+'Now the move itself: compute_tax, the table loader, and the eleven tests that reach the table internals go into billing/tax/calc.py, and the monolith keeps a thin wrapper that builds TaxableLines from the invoice, calls the new function, and assigns the result back exactly where it assigns now. That wrapper is the behaviour guarantee — the write-through stays, in the old file, where the old callers can see it. If the numbers are bit-identical after this, the seam holds.',
+        tool: { name: 'Bash', args: 'python -m refactor.move --from billing/monolith.py --to billing/tax/calc.py --symbols compute_tax,load_tax_table,_round_half_even · pytest -q tests/test_tax_table.py tests/test_quote_parity.py --tb=short' } },
+      { role: 'tool', name: 'Bash', execMs: 24000, simTokens: 4200, text:
+'moved 3 symbols, 194 lines · wrapper at billing/monolith.py:288 (34 lines)\ntests/test_tax_table.py 41 passed\ntests/test_quote_parity.py 18 passed\n  quote parity: 1,204 fixtures · max delta 0.000000 · 0 mismatches\nimport-linter tax-does-not-import-invoice: KEPT\nbilling/monolith.py 5,112 -> 4,941 lines' },
+      { role: 'assistant', text:
+'Parity is the only evidence that matters for a move like this and it is clean: 1,204 recorded quotes, zero delta. Moving the invoice side next, which is bigger and dumber — rendering, numbering, and the PDF path — and the interesting part is that it has no tax imports at all, so it is a straight move with the contract doing the checking. Then refunds, which touch both and are where I expect to find something I got wrong about the seam.',
+        tool: { name: 'Bash', args: 'python -m refactor.move --from billing/monolith.py --to billing/invoice/render.py,billing/invoice/numbering.py --symbols render_invoice,pdf_bytes,allocate_credit,recalculate_after_refund --follow-imports && rg -n "billing.monolith" billing tests | wc -l' } },
+      { role: 'tool', name: 'Bash', execMs: 41000, simTokens: 16000, text:
+'moved 4 symbols, 1,186 lines\nrecalculate_after_refund imports billing.tax.compute_tax  -> left in monolith as RECOMPUTE SEAM\n  reason: touches invoice.lines and tax rates; both sides, no port for it yet\nbilling/monolith.py 4,941 -> 3,772 lines\nimports of billing.monolith remaining: 41 in 27 files\n… 900 lines of move log + import graph diff (elided)' },
+      { role: 'assistant', text:
+'The tool left the refund recompute where it was and it was right to: that function is the one place that genuinely needs both sides, and pretending otherwise by inventing a port for it today would be a guess at an interface I have not earned. I am leaving it in the monolith as the seam with a comment naming what it needs — a read-only view of invoice lines — and that becomes commit five once someone has a caller for it other than refunds. Final gate before I call this done: the whole suite unrandomised and randomised, the contract suite, and a check that the monolith is now only the seams so nobody adds a sixth team\'s code to it.',
+        tool: { name: 'Bash', args: 'pytest -q -p no:randomly && pytest -q && lint-imports --config importlinter.toml && python -c "import billing, billing.tax, billing.invoice; print(billing.monolith.__file__)" && cloc billing --by-file | sort -n | tail -8' } },
+      { role: 'tool', name: 'Bash', execMs: 61000, simTokens: 18000, text:
+'2,411 passed (fixed order) · 2,411 passed (randomised, 3 seeds)\nimport-linter: 3 contracts KEPT, 0 broken\n  billing.tax -> billing.invoice: forbidden, 0 imports\n  billing.invoice -> billing.tax: forbidden, 0 imports\n  billing.* -> billing.monolith: allowed, 41 imports\ncoverage billing/tax 96% · billing/invoice 91% · billing/monolith 74%\nbilling/monolith.py 3,772\nbilling/invoice/render.py 812\nbilling/tax/calc.py 194\n… (elided)' },
+      { role: 'assistant', text:
+'Landed as four commits, each green on its own, and you can stop after any of them.\n\nOne: billing/tax/ports.py with the value types and the TaxTable protocol, plus the import-linter contract that was vacuously true before and is load-bearing now. Two: compute_tax, the table loader, and the rounding helper into billing/tax/calc.py behind a wrapper that keeps the write-through in the old file — 1,204 quote fixtures replayed at zero delta. Three: rendering, numbering, and the PDF path into billing/invoice/, which was a straight move with no tax imports. Four: the __init__ surface and the doc pointer that rode along with the gate run, so billing.tax and billing.invoice are the public names and billing.monolith stays importable but is not for new code.\n\nWhat changed in behaviour: nothing, and the parity run is the evidence for that rather than my saying so. What changed in shape: the tax tables are injected instead of being a module dict that some code path populates at import time, which is a real if invisible change — anything that called load_tax_table() for its side effect now has to hold the object it got back. That is the one thing a reviewer should grep for, and the wrapper raises a clear error rather than silently returning a zero rate if the table is missing, so the failure mode is loud.\n\nWhat is left, deliberately. recalculate_after_refund is still in the monolith because it reads invoice lines and tax rates in the same breath; the honest next step is a read-only LineView port, not a guess. 41 imports of billing.monolith remain across 27 files, all of them going through the wrapper shims, so they can move one file at a time in ordinary PRs with no coordination — the coverage numbers say the shims are exercised (74% on the monolith is the wrapper layer, not legacy code). And billing/tax is 96% covered against the old 88%, because moving a function drags its tests with it, which is the quiet dividend of doing this as moves rather than rewrites.' }
+    ]
+  },
+  {
+    id: 'doc',
+    name: 'api reference · decode-bound',
+    bootTokens: 7200,
+    steps: [
+      { role: 'user', text: 'Write docs/api/session-lifecycle.md for the 0.9 release. Audience is the three internal teams that build services on the handle, not end users, so it can assume they know what a transport is. It has to cover: the state machine and what is legal in each state, shutdown versus close versus abandon, idempotency, what happens to in-flight work, the error taxonomy and which errors are retryable, and the two things people keep getting wrong in review. Take it from the code and the existing tests, not from memory, and if the code and the old doc disagree, the code wins and you tell me.' },
+      { role: 'assistant', text:
+'Then the code is the source and the tests are the spec, because half of what the old guide asserts was written against 0.7 and quietly rotted. Reading the handle implementation in full, and I want the state transitions and every raise site rather than the docstrings — the docstrings are what I am writing, so quoting them would be circular.',
+        tool: { name: 'Read', args: 'src/agentic/handle.py · src/agentic/errors.py · tests/test_handle_lifecycle.py' } },
+      { role: 'tool', name: 'Read', execMs: 340, simTokens: 13500, text:
+'31\tclass State(Enum):\n32\t    NEW, OPEN, DRAINING, CLOSED = "new", "open", "draining", "closed"\n…\n88\t    def submit(self, msg):\n89\t        if self._state is not State.OPEN:\n90\t            raise HandleClosedError(self._state) if self._state is State.CLOSED \\\n91\t                else HandleDrainingError(self._state)\n…\n142\t    def shutdown(self, drain=True):\n143\t        """NEW/OPEN -> DRAINING -> CLOSED. Idempotent; returns the drain future."""\n…\n171\t            raise AbandonedError(...)   # only reachable from abandon()\n…\n540 lines handle.py · 96 lines errors.py · 71 tests (elided)' },
+      { role: 'assistant', text:
+'That gives me the taxonomy and, more usefully, the asymmetries the tests encode: submit after DRAINING raises a different error than submit after CLOSED, shutdown is idempotent but abandon is terminal, and abandon does not raise at all — it just stops waiting, which is the thing most often mistaken for a bug. Writing the reference in two passes so the state machine and the semantics are settled before the error table, because the table is only meaningful once the states are defined.',
+        tool: { name: 'Write', args:
+'{"path": "docs/api/session-lifecycle.md", "content": "# Session lifecycle\\n\\nAudience: service owners building on `SessionHandle`. Assumes you know what a transport is.\\n\\n## The four states\\n\\n`NEW` the object exists, no transport has been dialled. Nothing is legal except `open()` and garbage collection.\\n\\n`OPEN` transport dialled, the reader task is running, `submit()` is accepted. This is the only state in which work is accepted.\\n\\n`DRAINING` you have asked to stop. The reader keeps running until the in-flight set empties or the grace period expires. No new work is accepted; everything already submitted will complete. `submit()` here raises `HandleDrainingError`, which is not the same error as after `CLOSED` and is not a bug.\\n\\n`CLOSED` the transport is released and the object holds no resources. Terminal. Reads and `shutdown()` are legal; `submit()` raises `HandleClosedError`.\\n\\n```\\nNEW --open()--> OPEN --shutdown()--> DRAINING --drain done--> CLOSED\\nOPEN --shutdown(drain=False)--------> CLOSED (in-flight cancelled)\\nOPEN --abandon()-------------------> CLOSED (in-flight detached)\\n```\\n\\n## `shutdown()`, `close()`, `abandon()`\\n\\n`shutdown(drain=True)` is the normal exit. It returns a future that resolves when the drain finishes, so a caller that cares waits on the future rather than sleeping. Idempotent: calling it twice returns the same future, and calling it on a `CLOSED` handle is a no-op rather than an error, because a lifecycle method that fails when the thing you want has already happened is a lifecycle method people wrap in try/except.\\n\\n`close()` is `shutdown()` with a `DeprecationWarning`, and nothing else. It exists in 0.9 and is removed in 0.11. It does not have different semantics, it does not drain less, and it does not return anything different.\\n\\n`abandon()` stops waiting without releasing politely: the in-flight tasks are detached, not cancelled, and any that finish after the call have nowhere to deliver their result. Use it in a test fixture teardown and in nothing else. If you think you need it in a service, you need `shutdown(drain=False)`.\\n\\n## In-flight work\\n\\nIn-flight means submitted and not yet resolved. `drain=True` waits for all of them or the grace period, whichever comes first; the grace period is `handle.config.drain_timeout`, default 10s. `drain=False` cancels at the boundary of the current await point. `abandon()` neither waits nor cancels.\\n"}' } },
+      { role: 'tool', name: 'Write', execMs: 90, text:
+'docs/api/session-lifecycle.md  +62 lines\nmarkdownlint: 0 errors · 2 MD013 line-length warnings (table rows)' },
+      { role: 'assistant', text:
+'Second half: the error taxonomy with the retry verdict attached to each one, because that is the question every caller actually has, plus the two review findings the tests say people keep repeating. Pulling the retryable classification from what the tests assert rather than from what feels right.',
+        tool: { name: 'Write', args:
+'{"path": "docs/api/session-lifecycle.md", "append": true, "content": "\\n## Errors\\n\\n| error | raised when | retry? | notes |\\n|---|---|---|---|\\n| `HandleClosedError` | `submit()` on a `CLOSED` handle | no | your code kept a handle past its lifecycle; fix the ownership |\\n| `HandleDrainingError` | `submit()` on a `DRAINING` handle | yes, elsewhere | back of the shutdown is draining, not broken; move the work |\\n| `TransportError` | dial fails, reader dies, or the peer closes | yes, with backoff | the only transient error in the set |\\n| `ProtocolError` | peer sent something we cannot decode | no | the peer is wrong; retrying reproduces it |\\n| `AbandonedError` | a result is delivered to an abandoned handle | no | cannot happen in a service |\\n| `DrainTimeoutError` | `drain=True` exceeded `drain_timeout` | no | raised after the handle is already `CLOSED`; the work is gone |\\n\\nEverything except `TransportError` is a caller bug or a peer bug. A retry loop that catches `Exception` around `submit()` converts four programming errors into a production outage with extra latency.\\n\\n## Two things review keeps catching\\n\\n**1. Awaiting the handle instead of the future.** `shutdown()` returns a future; `close()` returns the same future. Code that calls `shutdown()` and then immediately `submit()` is not racing the shutdown, it is a logic error: `DRAINING` is not a state you can submit into, and there is no window in which you can.\\n\\n**2. Treating `HandleDrainingError` as fatal.** A service that shuts down one handle per request and restarts them on config reload will hit `DRAINING` during every reload and will page itself if it counts that error as a 5xx. Check the state before you page on the class.\\n\\n## What changed from the 0.7 guide\\n\\nThe old guide said `close()` releases immediately and `shutdown()` is the polite one. That is not true in 0.9 and was not true in 0.8: both go through the same drain, and the difference is the warning. It also said `abandon()` raises if work is outstanding — it does not, it detaches. The code is the contract here; the guide text came from a design that was reverted before 0.8 shipped.\\n"}' } },
+      { role: 'tool', name: 'Write', execMs: 80, text:
+'docs/api/session-lifecycle.md  +54 lines (appended)\nmarkdownlint: 0 errors · 4 MD013 line-length warnings (table rows)\n23 headings · 1 table · 1 code block' },
+      { role: 'assistant', text:
+'Now checking it is actually true rather than plausible. Every claim in that file came from the code or a test, so the check is the other direction: does the doc reference anything that no longer exists, and does the old guide still assert the two things I just said it gets wrong? Link check across the docs tree, a grep for the stale claims, and a render to make sure the state diagram survives the markdown pipeline.',
+        tool: { name: 'Bash', args:
+'docs-lint --links --strict && rg -n "close\\(\\)|abandon\\(\\)|drain" docs/guide/*.md | head -20 && mkdocs build --strict 2>&1 | tail -6' } },
+      { role: 'tool', name: 'Bash', execMs: 6400, simTokens: 2600, text:
+'docs-lint: 0 broken links · 1 orphan page (docs/api/session-lifecycle.md — not in nav)\nrg in docs/guide:\n  docs/guide/lifecycle.md:12  call `.shutdown()` on the handle        OK (renamed today)\n  docs/guide/lifecycle.md:57  close() releases the transport immediately   STALE\n  docs/guide/lifecycle.md:63  abandon() raises if work is outstanding       STALE\nmkdocs build --strict: succeeded, 1 warning (orphan page)\nnav check: add docs/api/session-lifecycle.md to mkdocs.yml' },
+      { role: 'assistant', text:
+'Two stale lines confirmed in the old guide, exactly the two the new file calls out, so they are not my inference — the guide was written against a reverted design and has been wrong for two releases. Fixing both in place with a pointer to the new reference, because deleting a claim from a guide silently leaves the next reader to rediscover it, and adding the page to the nav so it stops being an orphan.\n\nWhat the new reference asserts, and where each claim comes from: the four states and their legal operations from the State enum and the raise sites in submit; the idempotency of shutdown from test_handle_lifecycle.py:88, which asserts the second call returns the identical future object; the drain semantics and the 10 second default from handle.config.drain_timeout, not from the guide; and the retry column from the error classes plus the 71 lifecycle tests, which cover every state transition except abandon-after-DRAINING — that combination has no test and no caller, which is why the doc says abandon is fixture-only instead of documenting behaviour nobody has exercised.\n\nTwo judgement calls you should look at rather than take on trust. I put the retry verdict in the error table rather than in a section of its own, which means someone skimming will see it; and I wrote that everything except TransportError is a caller bug or a peer bug, which is true for the code as it stands but is a strong statement to put in a doc, and if a future release adds a transient ProtocolError — a truncating proxy, say — that sentence becomes the thing that misleads someone. The alternative was hedging it into uselessness.\n\nNot in scope, and worth a ticket: the guide and the reference overlap on the shutdown explanation, and one of them should own it. I would keep the narrative in the guide and reduce the reference to the table plus a link, but that is a restructuring of four pages and it should not ride along with a new page.' }
+    ]
+  },
+  {
+    id: 'repro',
+    name: 'crash repro · huge boot',
+    bootTokens: 24000,
+    steps: [
+      { role: 'user', text: 'arm64 runner segfaults in the PNG decoder about 1 run in 300 on the image fuzz target. Core is at /cores/python-core.9412. I need a reproduction I can hand to the Rust owner, and if you cannot get one, tell me exactly what you need to get one. Do not weaken the fuzz corpus to make it pass.' },
+      { role: 'assistant', text:
+'A crash that is rare, arch-specific and corpus-driven is almost never in the corpus — it is in whatever the runner\'s allocator layout or SIMD alignment happened to be. So the core first, not the code: the faulting instruction and the register state tell me whether this is a bounds bug, an alignment bug, or a use-after-free, and those three have completely different reproduction stories.',
+        tool: { name: 'Bash', args: 'lldb -c /cores/python-core.9412 -b -o "bt 25" -o "frame variable" -o "register read x0-x8" -o "info registers pc sp"' } },
+      { role: 'tool', name: 'Bash', execMs: 6400, simTokens: 5200, text:
+'EXC_BAD_ACCESS (SIGSEGV) KERN_INVALID_ADDRESS at 0x0000000118000000\nthread #1:\n  frame #0: 0x104c8a4c0 in libcodec.dylib::scanline_unfilter_neon+0x140\n  frame #1: 0x104c89d84 in libcodec.dylib::decode_idat+0x2a8\n  frame #2: 0x104c86a10 in libcodec.dylib::png_decode_into+0x94\n  frame #3: _PyDecoderTrampoline\nframe #0 variables:\n  row_ptr = 0x0000000117fff001   <- 1 byte past a page boundary, NEON ld1 needs 16\n  stride = 65 · out_w = 17 · filter_type = 3 (Paeth)\nx1 = 0x117fff001   v0.16b loaded from x1  -> ESR: alignment fault' },
+      { role: 'assistant', text:
+'That is not a bounds bug and not a UAF, it is an alignment fault: x1 ends in 1, and the NEON path loads 16 bytes from it unconditionally. 0x…001 is one byte past a page start, which is what a freshly mmap\'ed row buffer looks like when the allocation is one byte larger than the caller assumed — so the row buffer is sized short by the filter\'s leading byte and the SIMD loader is reading from the first byte of the next page. Rare because it needs an allocation that happens to land exactly on a page start; arch specific because x86 ldqu tolerates misalignment and NEON ld1 does not. Reading the two functions that agree about the row stride to find which one is lying.',
+        tool: { name: 'Read', args: 'src/codec/png.rs:210-430 · scanline_unfilter_neon + row_buffer_layout' } },
+      { role: 'tool', name: 'Read', execMs: 260, simTokens: 6400, text:
+'214\tfn row_buffer_layout(w: u32, bpp: usize) -> Layout {\n215\t    let bytes = w as usize * bpp;\n216\t    Layout { len: bytes, align: 16 }      // no leading filter byte\n…\n301\tfn scanline_unfilter_neon(row: &[u8], out: &mut [u8], filter: u8) {\n302\t    // out[0] is the filter tag; payload starts at out[1] and is assumed 16-aligned\n307\t    unsafe { let v = vld1q_u8(out.as_ptr().add(1) as *const u8); }\n…\n404\t  callers pass out.len() == w*bpp, never w*bpp+1' },
+      { role: 'assistant', text:
+'There is the disagreement, in two lines that are each individually reasonable: row_buffer_layout reserves w*bpp and the unfilter assumes the payload starts at offset 1 of a 16-aligned buffer, so the payload can never be aligned and is always one byte past the end of what was reserved for it. On x86 both halves of that are invisible — misaligned loads are allowed and the one-byte overrun lands in slack. On arm64 it is an alignment fault when the buffer starts on a page boundary and a possible read of the next page otherwise, which is the 1-in-300. So the repro does not need the corpus at all, it needs a width that makes w*bpp small enough to land on a fresh mmap and a Paeth filter: width 17 at bpp 4, and I can force the page-aligned allocation from the allocator rather than wait for luck.',
+        tool: { name: 'Bash', args: 'cargo test -p codec --test repro_pagealign -- --nocapture' } },
+      { role: 'tool', name: 'Bash', execMs: 38000, simTokens: 3200, text:
+'repro_pagealign: allocating row buffers from a page-aligned arena (mmap MAP_FIXED at 0x118000000)\n  width 17 bpp 4 filter Paeth   -> SIGSEGV (alignment)  3 of 3   <- matches core: x1 = 0x118000001\n  width 17 bpp 4 filter Sub      -> SIGSEGV (alignment)  3 of 3\n  width 16 bpp 4 filter Paeth    -> pass (payload lands aligned)\n  width 17 bpp 3 filter Paeth    -> pass (bpp 3 -> odd stride, scalar path taken)\n  x86_64 host, same corpus      -> no crash, 0 of 500\nminimal input: 42 byte PNG, IHDR w=17 h=1 bitdepth=8 colortype=6, one IDAT, filter 3' },
+      { role: 'assistant', text:
+'Deterministic, three lines of corpus reduced to a 42 byte PNG, and the width-16 and bpp-3 cases explain exactly why the fuzz corpus almost never hits it — it needs a width where w*bpp is 1 mod 16 and a filter type that reaches the NEON path. Fixing the layout rather than the load, because aligning the load would leave the one-byte overrun in place and turn a crash into silent memory reads.',
+        tool: { name: 'Edit', args: 'src/codec/png.rs · row_buffer_layout reserves the leading filter byte and pads to align' } },
+      { role: 'tool', name: 'Edit', execMs: 110, text:
+'--- a/src/codec/png.rs\n+++ b/src/codec/png.rs\n@@\n fn row_buffer_layout(w: u32, bpp: usize) -> Layout {\n-    let bytes = w as usize * bpp;\n-    Layout { len: bytes, align: 16 }\n+    // out[0] is the filter tag, so the payload starts at out[1]: reserve for it\n+    // and pad the total so payload = out.as_ptr().add(1) stays 16-byte aligned.\n+    let bytes = 1 + w as usize * bpp;\n+    Layout { len: bytes.next_multiple_of(16), align: 16 }\n@@\n     // SAFETY: payload pointer is 16-aligned by row_buffer_layout\n+    debug_assert_eq!((out.as_ptr() as usize).rem_euclid(16), 0);' },
+      { role: 'assistant', text:
+'Then the soak, since the claim I am making is about a crash that used to happen 1 in 300: the fuzz corpus at full strength on arm64, plus the alignment assert turned on, which turns any remaining misaligned call site into a failure rather than a maybe.',
+        tool: { name: 'Bash', args: 'cargo test --release -p codec --test fuzz_replay -- --corpus corpus/png --runs 5000 && cargo test -p codec --test repro_pagealign && git stash show -p | git apply --check' } },
+      { role: 'tool', name: 'Bash', execMs: 74000, simTokens: 1400, text:
+'aarch64: 5,000 replays, 0 crashes (was 17/5000 on the same corpus after the layout fix)\nrepro_pagealign: 0 of 3 crash · width 17 Paeth now aligned\ndebug_assert build: 1,204 corpus images, 0 alignment asserts\nx86_64: 5,000 replays, 0 crashes · no perf regression (median 4.1us/row, was 4.2)\ncorpus unchanged: 12,884 inputs, 0 weakened' },
+      { role: 'assistant', text:
+'Reproducible, fixed, and the fix is the layout rather than the load. Hand this to the Rust owner: the disagreement was between row_buffer_layout, which reserved w*bpp, and scanline_unfilter_neon, which assumes the payload begins at out[1] of a 16-aligned buffer. Those cannot both hold, so the payload was always one byte past the reserved end and never aligned. x86 hides both facts; arm64 faults on the alignment when the row buffer happens to start on a page boundary, which is the 1-in-300 and why it is runner-specific rather than load-specific.\n\nThe minimal input is a 42 byte PNG, 17x1, 8-bit RGBA, one IDAT, filter type 3 (Paeth), and repro_pagealign forces the page-aligned allocation so nobody has to be unlucky to see it. Width 16 or bpp 3 do not reproduce, which is the explanation for the corpus rarity: you need w*bpp congruent to 15 mod 16 together with a filter that reaches the NEON path.\n\nOne thing to be properly worried about rather than satisfied about. Before the fix the code read one byte past the end of every row buffer on every platform, on a path that runs for every image we decode; the arm64 crash was that overrun becoming visible. So the question worth answering before this closes is what the scalar x86 path was doing with those bytes for the last two years — the overrun is into allocator slack, so almost certainly harmless, but it was reading memory it did not own while producing output we shipped. The debug_assert build over 1,204 images is what I would point at for the answer, and the ASAN build over the full corpus is the thing I would ask for if you want certainty rather than a strong argument.' }
+    ]
+  },
 ];
 
 /* ------------------------------- helpers -------------------------------- */
@@ -411,10 +626,13 @@ function fmtTok(n) {
   if (n >= 1000) return (n / 1e3).toFixed(1) + 'k';
   return String(Math.round(n));
 }
+/* durations hug their unit — `750ms`, `12.65s`, `2m 27s` — so the compound minute form
+   and the single-unit forms read as one style; `tok` keeps its space because it is a
+   word, not a unit suffix */
 function fmtDur(s) {
   if (!Number.isFinite(s)) return '—';
-  if (s < 1) return Math.round(s * 1000) + ' ms';
-  if (s < 60) return s.toFixed(2) + ' s';
+  if (s < 1) return Math.round(s * 1000) + 'ms';
+  if (s < 60) return s.toFixed(2) + 's';
   const m = Math.floor(s / 60);
   return m + 'm ' + (s - m * 60).toFixed(0) + 's';
 }
@@ -695,9 +913,9 @@ function buildTimeline() {
     cacheSaveMs: sum(r => r.cacheSaveMs), gapMs: userGapMs + toolGapMs,
     compactions: items.filter(i => i.compact).length
   };
-  /* the same run on a flat (mult=100) curve: queue/tool/gaps are unchanged and
-     the rate is constant, so prefill and decode collapse to plain divisions —
-     no need to build a second timeline */
+  /* the same run on a flat (mult=100) curve, kept in the model as the control the
+     selftest measures the decay against: queue/tool/gaps are unchanged and the rate
+     is constant, so prefill and decode collapse to plain divisions — no second timeline */
   const flatDuration = (stats.queueMs + stats.toolMs + stats.gapMs) / 1000
                      + stats.coldTokens / config.prefill
                      + stats.outTokens / config.decode;
@@ -707,6 +925,34 @@ function buildTimeline() {
     segments: phaseSegments(items, duration),
     stats
   };
+}
+
+/* --------------------------- corpus character ---------------------------
+   "prefill-heavy" is only a property of the data once the engine speeds are
+   fixed, so every corpus is characterised against the DEFAULTS profile rather
+   than against wherever the sliders happen to be. The phase split of that
+   reference run is measured here rather than declared in the corpus, so it cannot
+   go stale when a scenario is edited; the summary quotes it alongside the split of
+   the run you are actually watching. */
+function profileStats(session) {
+  const keep = {};
+  for (const k of ['session', 'prefill', 'decode', 'latency', 'jitter', 'cache', 'curve']) keep[k] = config[k];
+  config.session = session.id;
+  config.prefill = DEFAULTS.prefill; config.decode = DEFAULTS.decode;
+  config.latency = DEFAULTS.latency; config.jitter = DEFAULTS.jitter;
+  config.cache = DEFAULTS.cache;
+  config.curve = mkPts(CURVES[DEFAULTS.curve]);
+  try { return buildTimeline().stats; } finally { Object.assign(config, keep); }
+}
+/* phase split as a ratio against decode, with enough precision to stay useful
+   when one phase is an order of magnitude smaller than the other */
+function pfDk(prefillMs, decodeMs) {
+  const r = prefillMs / Math.max(1e-9, decodeMs);
+  return (r >= 10 ? r.toFixed(0) : r >= 1 ? r.toFixed(1) : r.toFixed(2)) + ':1';
+}
+for (const s of SESSIONS) {
+  const st = profileStats(s);
+  s.split = pfDk(st.prefillMs, st.decodeMs);
 }
 
 /* ------------------------------ DOM build ------------------------------- */
@@ -1052,33 +1298,109 @@ function rebuild() {
   updateShare();
 }
 
+/* the reference split is quoted by the summary, so when the live run has moved
+   off the default profile say which corpus number is being quoted against */
+function atDefaultProfile() {
+  const p = TL.params;
+  return p.prefill === DEFAULTS.prefill && p.decode === DEFAULTS.decode
+      && !!p.cache === !!DEFAULTS.cache && p.latency === DEFAULTS.latency
+      && p.jitter === DEFAULTS.jitter
+      && JSON.stringify(p.curve) === JSON.stringify(mkPts(CURVES[DEFAULTS.curve]));
+}
+
 function updateSummary() {
   const s = TL.stats;
-  const delta = ((TL.duration / TL.flatDuration) - 1) * 100;
+  /* lead with where the wall time went, then the two faces of inference and their
+     split, then the detail; the card is the top of the panel so the order is read.
+     Every row carries a hover note, because the panel is the only place these
+     definitions are written down and the numbers are not self-explanatory. */
+  const TIPS = {
+    total: 'Wall time of the run: queue + prefill + decode + tool exec + turn gaps. '
+         + 'Playback speed changes how fast you watch it, not this.',
+    split: 'Total prefill time over total decode time. 12:1 means twelve seconds of '
+         + 'ingesting for every second of generating. It is a pooled ratio — every '
+         + 'request counts, weighted by how long each phase actually took.',
+    prefill: 'Prompt tokens the engine had to ingest, and the time they took, at prefill '
+           + 'tok/s × the decay curve. ' + (TL.params.cache
+             ? 'The count is the fresh chunk, not the whole prompt — a cached prefix is '
+               + 'free and is counted nowhere; untick the cache and this becomes every '
+               + 'prompt read whole from its first token.'
+             : 'The cache is off, so the count is every prompt read whole from its first '
+               + 'token — the shared-endpoint case, where nothing is kept between turns.'),
+    decode: 'Time spent generating, one token at a time at decode tok/s × the curve. The '
+          + 'count is the whole token stream: assistant prose plus streamed tool-call '
+          + 'arguments. Those tokens stay in context afterwards' + (TL.params.cache
+            ? ', and the cache means the model is never charged for re-reading them.'
+            : ', and with the cache off the model pays to read them back in every turn.'),
+    tool: 'Wall time the tools themselves took — greps, test suites, migrations. '
+        + 'No inference happens while these run, and their output joins the context '
+          + 'the next request has to ingest.',
+    queue: 'Per-request scheduler wait: latency ± jitter, drawn from a fixed seed so '
+         + 'a shared link replays identically. Paid once per request, before prefill.',
+    gaps: 'Round trips between turns that belong to no phase: 150 ms before a user '
+        + 'message, 120 ms after a tool result. They are the reason the four phases '
+          + 'alone do not add up to the clock; with the gaps the sum is exact.',
+    requests: 'Model turns. Each is one request and pays queue, prefill and decode in '
+            + 'that order; a tool call is part of the request that made it.',
+    peak: 'The largest prompt of the session, reached before the harness compacted the '
+        + 'history away. Context only ever shrinks at a compaction.',
+    compactions: 'History collapses. Context drops back to the boot prompt plus the '
+               + 'summary, and everything past boot is new text again: the next '
+                 + 'request re-prefills it at full cost.',
+    final: 'Prompt size at the end of the session: boot + every message + every tool '
+         + 'result still resident. Tokens are whitespace-separated words, which '
+           + 'over-counts prose slightly and under-counts code.',
+    avgPrefill: 'Cold tokens ÷ prefill seconds — the two numbers on the prefill row '
+              + 'above. A token-weighted ingest rate of what actually had to be '
+                + 'ingested, so it sits at or below the prefill speed you set, by '
+                + 'however far the curve dips.',
+    avgDecode: 'Generated tokens ÷ decode seconds — the two numbers on the decode row '
+             + 'above — always at or below the decode speed you set. Pooling every '
+               + 'request is what pulls it below the early ones: the same tokens cost '
+               + 'more once the prompt is long.',
+    cache: 'On: a request ingests only what arrived since the last turn and reuses the '
+         + 'attention state held for everything before it — local inference, where the '
+           + 'KV cache stays resident. Off: every request re-reads its whole prompt, '
+           + 'which is a shared endpoint with no prefix reuse.',
+    saved: 'Prefill the cache avoided: ingesting each prompt cold, minus ingesting just '
+         + 'its fresh chunk. The percentage is of all the prefill work the session '
+           + 'could have done. It buys time, not throughput — the fresh chunk still '
+           + 'attends to the whole history.'
+  };
+  const splitTip = TIPS.split + ' This scenario at the default profile: ' + TL.session.split + '.';
   const rows = [
-    ['requests', s.requests],
-    ['final context', fmtTok(TL.ctx) + ' tok'],
-    ['output tokens', fmtTok(s.outTokens)],
-    ['prompt cache', TL.params.cache ? 'on · instant reads' : 'off · full re-prefill'],
-    ['queue wait', fmtDur(s.queueMs / 1000)],
-    ['prefill', fmtDur(s.prefillMs / 1000)],
-    ['avg prefill', (s.coldTokens / Math.max(1e-9, s.prefillMs / 1000)).toFixed(0) + ' tok/s'],
-    ['prefill saved by cache', fmtDur(s.cacheSaveMs / 1000) + '  (' +
-      (s.prefillMs + s.cacheSaveMs > 0 ? (100 * s.cacheSaveMs / (s.prefillMs + s.cacheSaveMs)).toFixed(0) : '0') + '%)'],
-    ['decode', fmtDur(s.decodeMs / 1000)],
-    ['tool exec', fmtDur(s.toolMs / 1000)],
-    ['turn gaps', fmtDur(s.gapMs / 1000)],
-    ['total', fmtDur(TL.duration)],
-    ['avg decode', (s.outTokens / Math.max(1e-9, s.decodeMs / 1000)).toFixed(0) + ' tok/s'],
-    ['same run, flat curve', fmtDur(TL.flatDuration) + '  (' + (delta >= 0 ? '+' : '') + delta.toFixed(0) + '%)']
+    ['total', fmtDur(TL.duration), 1, TIPS.total],
+    ['prefill : decode', pfDk(s.prefillMs, s.decodeMs) +
+      (atDefaultProfile() ? '' : '   (corpus at defaults ' + TL.session.split + ')'), 1, splitTip],
+    ['prefill', fmtTok(s.coldTokens) + ' tok (' + fmtDur(s.prefillMs / 1000) + ')', 0, TIPS.prefill],
+    ['decode', fmtTok(s.outTokens) + ' tok (' + fmtDur(s.decodeMs / 1000) + ')', 0, TIPS.decode],
+    ['tool exec', fmtDur(s.toolMs / 1000), 0, TIPS.tool],
+    ['queue wait', fmtDur(s.queueMs / 1000), 0, TIPS.queue],
+    ['turn gaps', fmtDur(s.gapMs / 1000), 0, TIPS.gaps],
+    ['requests', s.requests, 0, TIPS.requests]
   ];
-  if (s.compactions) {
-    if (TL.ctx < s.peakCtx) rows.splice(2, 0, ['peak context', fmtTok(s.peakCtx) + ' tok']);
-    rows.push(['harness compactions', s.compactions + '×']);
-  }
+  if (TL.ctx < s.peakCtx) rows.push(['peak context', fmtTok(s.peakCtx) + ' tok', 0, TIPS.peak]);
+  if (s.compactions) rows.push(['harness compactions', s.compactions + '×', 0, TIPS.compactions]);
+  rows.push(
+    ['final context', fmtTok(TL.ctx) + ' tok', 0, TIPS.final],
+    ['avg prefill', (s.coldTokens / Math.max(1e-9, s.prefillMs / 1000)).toFixed(0) + ' tok/s', 0, TIPS.avgPrefill],
+    ['avg decode', (s.outTokens / Math.max(1e-9, s.decodeMs / 1000)).toFixed(0) + ' tok/s', 0, TIPS.avgDecode],
+    ['prompt cache', TL.params.cache ? 'on · instant reads' : 'off · full re-prefill', 0, TIPS.cache]
+  );
+  /* with the cache off there is nothing saved to report — the row would read
+     "0 ms (0%)" forever, so it belongs to the cache, not to the run */
+  if (TL.params.cache) rows.push(['prefill saved by cache', fmtDur(s.cacheSaveMs / 1000) + ' (' +
+    (s.prefillMs + s.cacheSaveMs > 0 ? (100 * s.cacheSaveMs / (s.prefillMs + s.cacheSaveMs)).toFixed(0) : '0') + '%)',
+    0, TIPS.saved]);
   const dl = $('#summary');
   dl.textContent = '';
-  for (const [k, v] of rows) { dl.appendChild(el('dt', null, k)); dl.appendChild(el('dd', null, String(v))); }
+  for (const [k, v, hi, tip] of rows) {
+    const dt = el('dt', hi ? 'hi' : null, k), dd = el('dd', hi ? 'hi' : null, String(v));
+    /* both cells of the row carry it, so the note is reachable anywhere along the line */
+    if (tip) { dt.title = tip; dd.title = tip; }
+    dl.appendChild(dt);
+    dl.appendChild(dd);
+  }
   $('#tdur').textContent = fmtDur(TL.duration);
 }
 
@@ -1314,7 +1636,9 @@ for (const key of ['prefill', 'decode']) {
 const sessionSel = $('#session');
 for (const s of SESSIONS) {
   const o = document.createElement('option');
-  o.value = s.id; o.textContent = s.name;
+  /* the topbar wraps before it shrinks the picker, but a narrow window still clips
+     the longest scenario name, so the full label is in the tooltip */
+  o.value = s.id; o.textContent = s.name; o.title = s.name;
   sessionSel.appendChild(o);
 }
 sessionSel.value = config.session;
@@ -1427,7 +1751,7 @@ syncEngine();
 syncContention();
 rebuild();
 if (config.autoplay) play(); else { updatePlayBtn(); render(vTime); }
-window.AS = { config, get tl() { return TL; }, rebuild, seek, play, pause, phaseAt, render };
+window.AS = { config, sessions: SESSIONS, profileStats, get tl() { return TL; }, rebuild, seek, play, pause, phaseAt, render };
 </script>
 </body>
 </html>

@@ -8,8 +8,10 @@ per-request latency option to simulate a system under contention.
 Implemented as an all-in-one HTML file, with query parameters allowing a quick linking to
 a predefined configuration.
 
-Session export and replay is not implemented yet, so this pass ships four built-in session
-corpuses instead: `greenfield`, `bug-hunt`, `long-log`, and `deep-fix`.
+Session export and replay is not implemented yet, so this pass ships ten built-in session
+corpuses instead: `greenfield`, `bug-hunt`, `long-log`, `deep-fix`, `sweep`, `oncall`,
+`migration`, `refactor`, `doc`, and `repro`. Each is pure data and each exercises a different
+shape of the same model — see [`scenarios.md`](scenarios.md).
 
 ## Running
 
@@ -80,10 +82,21 @@ tokens by how much history they have to attend to.
 ## Controls
 
 `space` play/pause · `R` restart · `←` `→` seek one second (`shift` for five) ·
-`1`–`7` playback speed · `P` toggle panel. The panel holds engine speed, the prompt cache
-toggle, contention, the decay curve, and a per-request ledger whose `prefilled` column shows
-how much of each prompt was actually ingested. The summary compares the run against the same
-run on a flat curve, and reports how much prefill the cache saved. Curve table cells commit
+`1`–`7` playback speed · `P` toggle panel. The **session summary is the first card in the
+panel**, because it is the thing you come back to after every settings change: it leads with
+`total` and `prefill : decode` — the split between the two faces of inference, `12:1` for
+`long-log`, `0.54:1` for `doc` — then the phases, the context, and how much prefill the prompt
+cache saved (a row that belongs to the cache, so it is simply absent when the cache is off —
+there is no saving to report at `0 ms (0%)`). Each phase row carries its tokens next to its
+time — `prefill 125k tok (2m 27s)`, `decode 325 tok (12.65 s)` — so the two `avg` rows below are
+the division of two numbers you have just read, not another thing to remember. The split is
+measured from the timeline, and when the live settings are off the default profile the row also
+quotes the corpus's own number at that profile, so the two cannot be confused. Every row has a
+hover note — the cursor goes to `help` over the card — because the panel is where these
+definitions live: which tokens each rate counts, what the cache does and does not make free, and
+why the four phases need the turn gaps to add up to the clock. Then the panel holds engine
+speed, the prompt cache toggle, contention, the decay curve, and a per-request ledger whose
+`prefilled` column shows how much of each prompt was actually ingested. Curve table cells commit
 when the field loses focus, or on `enter`; `escape` puts the old number back. Switching
 scenario pauses and rewinds to zero rather than rolling straight into the new run, so
 `autoplay` governs the page load only.
@@ -103,7 +116,7 @@ own duration.
 
 | parameter             | meaning                                             |
 |-----------------------|-----------------------------------------------------|
-| `session`             | `greenfield`, `bug-hunt`, `long-log`, `deep-fix`      |
+| `session`             | any scenario id — `greenfield`, `bug-hunt`, `long-log`, `deep-fix`, `sweep`, `oncall`, `migration`, `refactor`, `doc`, `repro` |
 | `prefill`, `p`        | prefill speed in tok/s                               |
 | `decode`, `d`         | decode speed in tok/s, before the curve              |
 | `cache`, `c`          | prompt cache, `1` on (default) or `0` off            |
@@ -128,6 +141,17 @@ timeline and firing the transport, keyboard, settings, curve editor, and seek ha
 also checks the seek bar's bands: they tile the duration with nothing doubled or missed, each
 band's phase is the one `phaseAt` reports at its midpoint, and every band phase has a colour
 in both themes — so the bar cannot drift from the chips or go invisible on one palette.
+
+After the handlers it walks the whole corpus, not just the scenario the URL picked, and holds
+every entry to the same shape: it opens on a user turn and closes on a tool-free assistant
+turn, every tool result answers a call that named that tool, there are at least three
+requests, context never shrinks except at a compaction, and the phase split the summary quotes
+is the split the corpus measures. It also pins the panel: the summary is the first card, its
+first two rows are `total` and `prefill : decode`, its phase rows pair tokens with time, every
+row carries a hover note, and a row that describes a setting only appears while that setting is
+on — which also means the checks restore the URL profile before reading the markup, so they
+describe the page rather than whatever the UI probe tested last. Adding a scenario that does not
+satisfy them fails here rather than in the dropdown.
 
 ```sh
 node tools/selftest.mjs index.html "?session=long-log&autoplay=0"
