@@ -53,6 +53,7 @@ const docListeners = {};
 /* ids present in the real markup. The shim resolves CSS ids against these so
    HTML <-> JS drift (a JS $() referencing a renamed/removed id) fails loudly
    instead of silently synthesizing an element a real browser would never have. */
+const QSA = new Map();
 const MARKUP_IDS = new Set((html.match(/\bid="([^"]+)"/g) || []).map((m) => m.slice(4, -1)));
 const document = {
   documentElement: new El('html'), body: new El('body'),
@@ -74,8 +75,19 @@ const document = {
     }
     const e = new El(sel === '#curveChart' || sel.indexOf('curveChart') >= 0 ? 'svg' : 'div'); cache.set(sel, e); return e;
   },
-  querySelectorAll: (sel) => sel === '[data-curve]'
-    ? ['flat', 'gentle', 'steep', 'cliff'].map((c) => { const e = new El('button'); e.dataset.curve = c; return e; }) : [],
+  /* attribute-selector lookups are memoized so the page and a test re-querying the same
+     selector get the SAME nodes. Without that, listeners the page attaches at load land on
+     objects the test can never reach, and a battery that dispatches on freshly built ones
+     exercises nothing while still going green */
+  querySelectorAll: (sel) => {
+    if (QSA.has(sel)) return QSA.get(sel);
+    let made = [];
+    if (sel === '[data-curve]') {
+      made = ['flat', 'gentle', 'steep', 'cliff'].map((c) => { const e = new El('button'); e.dataset.curve = c; return e; });
+    }
+    QSA.set(sel, made);
+    return made;
+  },
 };
 const fireDoc = (type, ev) => (docListeners[type] || []).forEach((fn) => guard('doc ' + type, () => fn({ type, target: { tagName: 'BODY' }, preventDefault() {}, ...ev })));
 
@@ -95,7 +107,14 @@ guard('boot', () => new Function('window', 'document', 'location', 'performance'
   globals.window, document, location, perf, globals.requestAnimationFrame, globals.cancelAnimationFrame, globals.navigator));
 
 const AS = globals.window.AS;
-const ok = (name, cond, extra = '') => console.log((cond ? 'PASS ' : 'FAIL ') + name + (extra ? '  ' + extra : ''));
+/* a check has to be able to fail the run: logging FAIL while exiting 0 means a harness that
+   watches exit codes reports every broken build as clean */
+let checks = 0, failed = 0;
+const ok = (name, cond, extra = '') => {
+  checks++;
+  if (!cond) failed++;
+  console.log((cond ? 'PASS ' : 'FAIL ') + name + (extra ? '  ' + extra : ''));
+};
 const pump = () => { const f = frames; frames = []; f.forEach((fn) => guard('frame', () => fn(perf.now()))); };
 const $ = (sel) => cache.get(sel);
 
@@ -109,7 +128,11 @@ ok('autoplay starts playback on load', AS.config.autoplay
    the phase bar is the only place the run says what it is doing, so sample it as the
    playhead moves: its heading must be the phase phaseAt reports, and between phases it
    must name the non-phase it is in rather than freeze on the last one */
-AS.seek(0); pump();
+/* pause before sampling: the sweep compares the bar with phaseAt at the instant it sampled,
+   and a run still playing advances the clock between the seek and the read — one millisecond
+   of real time is sixteen virtual ones at speed 16, enough to cross a phase boundary and make a
+   correct label look wrong. Autoplay is verified above, before the sweep. */
+AS.pause(); AS.seek(0); pump();
 const BAR = [];
 for (let t = 0; t < AS.tl.duration; t += AS.tl.duration / 200) {
   AS.seek(t); pump();
@@ -341,6 +364,44 @@ ok('prefill grows without cache', !decayExpected || compacts.length ||
    TL.reqs.map((r) => Math.round((r.prefillMs + r.cacheSaveMs) / 100) / 10 + 's').join(' -> ') + ' uncached');
 const effRate = (r) => r.cold / Math.max(1e-9, r.prefillMs / 1000);
 ok('prefill costs no less than a flat curve', TL.reqs.every((r) => r.prefillMs >= r.cold / AS.config.prefill * 1000 - 1e-6));
+/* the engine hint states TTFT as the queue plus the uncached tail at the *throttled* prefill
+   rate, so pin that sentence to the arithmetic behind it. A flat curve is the case where the
+   formula collapses to plain tokens / rate, so it must match to the microsecond; a curve that
+   falls to a quarter of nominal must cost strictly more, which is the whole reason the hint
+   names the curve instead of dividing by the slider value. */
+/* the hint is a sum of three durations, so check it against the clock the model keeps. AS.tl
+   is a live getter while TL above is a snapshot, so a rebuilt timeline is read through AS.tl.
+   Under a flat curve every throttle is 1.0 and each term reduces to its slider value, so the
+   instant the first token lands must be exactly the queue, plus the uncached context at the
+   prefill rate, plus one decode step. A curve that falls to a quarter of nominal has to put it
+   later on both phase terms \u2014 which is why the line keeps durations and the hover keeps rates:
+   dividing the tokens by the nominal rate, or quoting 'first token at N tok/s', is wrong on
+   every non-flat curve, and the second also implies a prefill-bound wait is decode-bound. */
+/* everything is read off the timeline items, not from app internals: an assistant item knows
+   when it was submitted (latencyStart), when prefill ended (decodeStart), and when the first
+   token landed (times[0]), which is the whole sum the hint states. */
+const turns = () => AS.tl.items.filter((i) => i.kind === 'assistant');
+const actualMs = (it) => (it.times[0] - it.latencyStart) * 1000;
+const flatMs = (it) => it.req.queueMs + (it.req.cold / AS.config.prefill) * 1000 + 1000 / AS.config.decode;
+const slowCurve = [{ ctx: 0, mult: 100 }, { ctx: 2000, mult: 25 }];
+const backCurve = AS.config.curve.map((c) => ({ ctx: c.ctx, mult: c.mult }));
+const backDur = AS.tl.duration;
+AS.config.curve = [{ ctx: 0, mult: 100 }]; AS.rebuild(); pump();
+const flatErr = Math.abs(actualMs(turns()[0]) - flatMs(turns()[0]));
+AS.config.curve = slowCurve; AS.rebuild(); pump();
+const extra = turns().map((it) => actualMs(it) - flatMs(it));
+/* a relative floor, not milliseconds: with a slider at 900k tok/s the whole session prefills in
+   under a second and throttling it can only move TTFT by under a second */
+const unthrottled = turns().reduce((a, it) => a + (it.req.cold / AS.config.prefill) * 1000, 0);
+const extraTotal = extra.reduce((a, d) => a + d, 0);
+AS.config.curve = backCurve; AS.rebuild(); pump();
+ok('TTFT is queue, prefill, and one decode token at the throttled rates',
+   flatErr < 1 && extra.every((d) => d > -1e-6) &&
+     unthrottled > 0 && extraTotal > unthrottled / 2 &&
+     Math.abs(AS.tl.duration - backDur) < 1e-6,
+   'flat curve: ' + flatErr.toFixed(9) + 'ms from queue + tokens/prefill + 1/decode; at 25% no first token is earlier and ' +
+     'the run pays +' + Math.round(extraTotal) + 'ms, ' + (extraTotal / unthrottled).toFixed(1) +
+     'x its unthrottled prefill cost');
 ok('prefill throughput falls with prompt size', !decayExpected || compacts.length ||
    effRate(TL.reqs[TL.reqs.length - 1]) < effRate(TL.reqs[0]) * 0.9,
    TL.reqs.map((r) => effRate(r).toFixed(0)).join(' -> ') + ' tok/s');
@@ -537,37 +598,238 @@ const PANEL = html.slice(html.indexOf('<aside class="panel"'), html.indexOf('</a
 ok('summary is the first card in the panel',
    PANEL.indexOf('id="summary"') >= 0 && PANEL.indexOf('id="summary"') < PANEL.indexOf('id="prefill"'),
    'summary at ' + PANEL.indexOf('id="summary"') + ', engine at ' + PANEL.indexOf('id="prefill"'));
+/* contention is a property of the engine, not a thing beside it, so its rows live under the
+   engine heading as one group: still named, still hover-documented, but the panel no longer
+   spends a card on two number fields. The five controls have to stay in one card and in
+   reading order — throughput, cache, then the wait — because the group rule is what tells
+   them apart once the heading is gone. */
+const ENG_IDS = ['prefill', 'prefillRange', 'decode', 'decodeRange', 'cache', 'latency', 'jitter', 'engineHint'];
+const engAt = ENG_IDS.map((id) => PANEL.indexOf('id="' + id + '"'));
+const engEnd = PANEL.indexOf('</div>', PANEL.indexOf('id="engineHint"'));
+
+/* the one line the page offers as a formula, checked as a sum of durations: three phases in
+   the order they happen, no rate or unit inside it (that was the old 'first token at N tok/s'),
+   and the pricing available on hover now that the line no longer carries it */
+const HINT = $('#engineHint').textContent;
+ok('the engine hint states TTFT as durations that add up',
+   /TTFT \u2248 queue \+ prefill \+ decode 1 token/.test(HINT) &&
+     !/tok\/s|first token at|\u00f7/.test(HINT) && /title="Time to first token/.test(html),
+   HINT);
+
+ok('engine and contention share one card',
+   !/<h2>Contention<\/h2>/.test(PANEL) && /class="gsub"[^>]*>\s*contention\s*</.test(PANEL) &&
+     engAt.every((i) => i >= 0) && engAt.every((i, k) => k === 0 || i > engAt[k - 1]) &&
+     engAt.every((i) => i > PANEL.indexOf('<h2>Engine</h2>') && i < engEnd),
+   ENG_IDS.map((id, i) => id + '@' + engAt[i]).join(' '));
+/* the wait is one field with a spread on it, not two stacked settings: label carries the
+   unit, both number fields ride the right edge, and ± reads as the relation between them.
+   The spread field loses its <label> to fit, so it has to keep an accessible name — a field
+   reachable only by click is a field a keyboard or screen reader user cannot identify. */
+/* the panel's fields are laid out by hand in tight rows, so a name is easy to lose while
+   moving an attribute about, and the row still looks fine without one \u2014 the field just stops
+   being announced. Every input has to draw its accessible name from somewhere: a caption it
+   points at with aria-labelledby, or an explicit aria-label. A pointer at a caption that is not
+   there names the field with nothing. */
+const panelInput = (tag) => (tag.match(/id="([^"]+)"/) || [, null])[1];
+const PANEL_CODE = PANEL.replace(/<!--[\s\S]*?-->/g, '');
+const PANEL_INPUTS = (PANEL_CODE.match(/<input\b[^>]*>/g) || []);
+const CAPS = [...PANEL_CODE.matchAll(/<span class="cap" id="([^"]+)">([^<]*)<\/span>/g)];
+const CAP_BY_ID = new Map(CAPS.map((c) => [c[1], c[2]]));
+ok('every panel field is named, and the name exists',
+   PANEL_INPUTS.length >= 7 &&
+     PANEL_INPUTS.every((t) => {
+       const by = (t.match(/aria-labelledby="([^"]+)"/) || [])[1];
+       return by ? CAP_BY_ID.has(by) && CAP_BY_ID.get(by).length > 3 : /aria-label="[^"]{4,}"/.test(t);
+     }) &&
+     /* a caption nothing points at is a label on nothing, which is how an edit leaves a field
+        silently un-named while the row still reads fine */
+     CAPS.every((c) => PANEL_INPUTS.some((t) => (t.match(/aria-labelledby="([^"]+)"/) || [])[1] === c[1])) &&
+     new Set(CAPS.map((c) => c[1])).size === CAPS.length,
+   PANEL_INPUTS.map((t) => {
+     const by = (t.match(/aria-labelledby="([^"]+)"/) || [])[1];
+     return panelInput(t) + ':' + (by ? (CAP_BY_ID.has(by) ? 'cap' : 'MISSING-CAPTION') : 'aria');
+   }).join(' '));
+
+const CAP_TEXT = Object.fromEntries(CAPS.map((c) => [c[1], c[2]]));
+ok('the panel captions say what they are for',
+   CAP_TEXT.prefillName === 'prefill speed' && CAP_TEXT.decodeName === 'decode speed' &&
+     CAP_TEXT.cacheName === 'prompt cache' && CAP_TEXT.latencyName === 'request latency',
+   CAPS.map((c) => c[2]).join(' \u00b7 '));
+
+
+/* the note lives on the row, once, and everything inside answers with it by inheritance \u2014
+   caption, field, unit, slider. It must not be put back on a label pointing at the control: a
+   browser suppresses that tooltip, and the suppressed element is the one text a reader hovers,
+   which is how this looked correct in markup and did nothing on screen. Captions therefore carry
+   no note of their own, and there are no labels left in the card to suppress one. */
+/* a field that has both a name and a note can say two different things about itself, and some
+   screen readers speak both in Chrome and Firefox. The note is allowed to run past the name (it
+   usually adds a unit or an example), but its opening has to be the name's own leading phrase, so
+   hearing twice is repetition rather than contradiction. Comparing on the clause before the first
+   comma keeps the aria-label free to carry a unit the prose note phrases differently. */
+ok('a named field carries a note that opens with its name',
+   (PANEL_CODE.match(/<input\b[^>]*>/g) || []).every((t) => {
+     const name = (t.match(/aria-label="([^"]+)"/) || [])[1];
+     const note = (t.match(/title="([^"]+)"/) || [])[1];
+     const head = name ? name.split(',')[0].trim().toLowerCase() : '';
+     return !name || !note || !head || note.toLowerCase().startsWith(head);
+   }),
+   (PANEL_CODE.match(/aria-label="[^"]*"[^>]*title="[^"]{0,48}/g) || []).join(' | ') || 'no field carries both');
+
+/* the floor is only "not empty" — the check is about *where* a note hangs (the row wrapper, so
+   the whole line is hoverable) not how long its prose runs, and a length guard would reject a
+   short-but-complete note like "Time it takes for the engine to start working on a request." */
+const NOTE = '"[^"]{12,}"';
+ok('the engine notes sit on rows, never on a label',
+   ['prefill', 'decode'].every((id) =>
+     new RegExp('class="ctl" title=' + NOTE + '[\\s\\S]{0,400}?id="' + id + '"').test(PANEL_CODE)) &&
+     new RegExp('class="row" title=' + NOTE + '><span class="cap" id="cacheName"').test(PANEL_CODE) &&
+     new RegExp('class="row duo" title=' + NOTE + '><span class="cap" id="latencyName"').test(PANEL_CODE) &&
+     /class="gsub"[\s\S]{0,20}title="[^"]{12,}/.test(PANEL_CODE) &&
+     /id="jitter"[^>]*title="[^"]{12,}"/.test(PANEL_CODE) &&
+     !/<label\b/.test(PANEL_CODE) &&
+     !/<span class="cap"[^>]*title=/.test(PANEL_CODE) &&
+     /\.row \.cap \{/.test(STYLE),
+   'one note per row: prefill, decode, cache, contention, latency, plus the spread field');
+const DUO = (PANEL.match(/class="row duo"[^>]*>([\s\S]*?)<\/div>/) || [, ''])[1];
+const JIT = (DUO.match(/<input[^>]*id="jitter"[^>]*>/) || [, ''])[0];
+ok('the wait is one row with its spread on the right',
+   /request latency/.test(DUO) && /id="latency"/.test(DUO) && /id="jitter"/.test(DUO) &&
+     /class="pm"/.test(DUO) && DUO.indexOf('id="jitter"') > DUO.indexOf('class="pm"') &&
+     /aria-label="[^"]{4,}"/.test(JIT),
+   'label, field, \u00b1, field \u2014 jitter named: ' + (/aria-label/.test(JIT) ? 'yes' : 'NO'));
+/* one unit per quantity, written once, after the numbers it belongs to. The wait is one
+   quantity with a spread on it, so `150 ± 50 ms` says it once rather than repeating the unit
+   on both fields; the fields that stand alone each carry their own */
+ok('one unit per quantity, to its right',
+   !/\((ms|tok\/s)\)/.test(PANEL) &&
+     ['prefill', 'decode'].every((id) =>
+       new RegExp('id="' + id + '"[^>]*>\\s*<span class="unit">[a-z]').test(PANEL)) &&
+     (DUO.match(/class="unit"/g) || []).length === 1 &&
+     /class="pm"[^>]*>\u00b1<\/span>\s*<input id="jitter"[^>]*>\s*<span class="unit">ms</.test(DUO),
+   'wait row units: ' + ((DUO.match(/class="unit"/g) || []).length) + ', after both fields');
+/* narrow windows: the panel is a view, not a sidebar. Stacked under the session it started a
+   screen below the phase bar with the boot step still showing above it, so opening it now
+   takes the whole space and the transcript steps aside. */
+const NARROW = (STYLE.match(/@media \(max-width: 900px\) \{([\s\S]*?)\n  \}/) || [, ''])[1];
+ok('the panel becomes a full view on narrow windows',
+   /html:not\(\.no-panel\) \.transcript \{ display: none/.test(NARROW) &&
+     /main \{[^}]*overflow: hidden/.test(NARROW) &&
+     /\.panel \{[^}]*flex: 1 1 auto[^}]*min-height: 0/.test(NARROW),
+   NARROW.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/\s+/g, ' ').trim().slice(0, 100));
+/* the class that hides the panel is written where the CSS reads it. Nothing else can catch a
+   JS toggle on <body> against a rule keyed on <html>: the shim applies no CSS, so the panel
+   would simply stop toggling in a browser and pass every test here. And on a narrow window
+   it is decided before first paint, so opening the panel is never the page's first motion. */
+ok('the settings toggle is labelled and writes the class the CSS reads',
+   /id="panelToggle"[^>]*title="Toggle settings \(P\)">settings<\/button>/.test(html) &&
+     /documentElement\.classList\.toggle\('no-panel'\)/.test(src) &&
+     !/body\.classList\.toggle\('no-panel'\)/.test(src) &&
+     /html\.no-panel \.panel \{ display: none/.test(STYLE) &&
+     /documentElement\.classList\.add\('no-panel'\)/.test(html) &&
+     /matchMedia\('\(max-width: 900px\)'\)/.test(html),
+   /* the button is the only way to reach the panel on a touch device, so its label is the
+      affordance; the class must be written where the rule reads it, because the shim applies
+      no CSS and a <body> toggle against an <html> rule would pass every test here while the
+      button did nothing in a browser. On a narrow window the head script starts it closed. */
+   'says settings, toggles (P), root class, closed before paint on narrow windows');
 const DL = $('#summary');
-/* the UI probes above leave whatever state they last tested — a different corpus, the
-   cache flipped — so restore the URL profile before checking markup that profile is
-   supposed to produce, or the assertions describe the test rather than the page */
-$('#session').value = TL.session.id; $('#session').dispatch('change');
-$('#cache').dispatch('change', { target: { checked: TL.params.cache } }); pump();
-ok('URL profile restored', AS.tl.session.id === TL.session.id && !!AS.config.cache === !!TL.params.cache,
-   AS.tl.session.id + ' · cache ' + (AS.config.cache ? 'on' : 'off') + ' · ' + AS.tl.duration.toFixed(1) + 's');
+/* the UI probes above leave whatever state they last tested: another corpus, the cache
+   flipped, the rates dragged to whatever the curve battery needed. Restore the whole URL
+   profile before checking markup that profile is supposed to produce, or both the assertions
+   and the numbers they print describe the test rather than the page. Restoring only the
+   session and the cache left the prefill rate at a probe's 900k tok/s, and the summary rows
+   printed a plausible ingest three hundred times too fast. */
+Object.assign(AS.config, { session: TL.session.id, prefill: TL.params.prefill, decode: TL.params.decode,
+  latency: TL.params.latency, jitter: TL.params.jitter, cache: TL.params.cache });
+AS.config.curve.length = 0;
+for (const p of TL.params.curve) AS.config.curve.push({ ctx: p.ctx, mult: p.mult });
+AS.rebuild(); pump();
+ok('URL profile restored',
+   AS.tl.session.id === TL.session.id && !!AS.config.cache === !!TL.params.cache &&
+     AS.config.prefill === TL.params.prefill && AS.config.decode === TL.params.decode &&
+     AS.config.latency === TL.params.latency && AS.config.jitter === TL.params.jitter &&
+     JSON.stringify(AS.tl.params.curve) === JSON.stringify(TL.params.curve),
+   AS.tl.session.id + ' · ' + AS.config.prefill + '/' + AS.config.decode + ' tok/s · ' +
+     AS.config.latency + '±' + AS.config.jitter + ' ms · cache ' + (AS.config.cache ? 'on' : 'off') +
+     ' · ' + AS.tl.params.curve.length + ' curve points · ' + AS.tl.duration.toFixed(1) + 's');
+/* read the card by row name, not by position: peak context, harness compactions and the cache
+   saving all come and go with the settings, so an index asserts a layout the card is free to
+   change and fails on a reorder that breaks nothing */
+const ROWS = {};
+DL.children.forEach((c, i) => {
+  if (i % 2) return;
+  ROWS[String(c.textContent)] = { value: String(DL.children[i + 1].textContent), hi: c.classList.contains('hi') };
+});
+const ORDER = DL.children.filter((c, i) => !(i % 2)).map((c) => String(c.textContent));
 ok('summary leads with total and the phase split',
-   DL.children[0].textContent === 'total' && DL.children[2].textContent === 'prefill : decode'
-   && DL.children[1].classList.contains('hi') && DL.children[3].classList.contains('hi'),
-   DL.children[0].textContent + ' / ' + DL.children[2].textContent);
+   ORDER[0] === 'total' && ORDER[1] === 'prefill : decode' && ROWS.total.hi && ROWS['prefill : decode'].hi,
+   ORDER.slice(0, 4).join(' \u00b7 '));
 ok('the highlighted rows are a pair', DL.descendants().filter((e) => e.tagName === 'DD' && e.classList.contains('hi')).length === 2);
 /* the phase rows carry their tokens next to their time — "125k tok (2m 27s)" — which is
    what keeps the card short enough to read at a glance without a token row of its own */
 ok('phase rows pair tokens with time',
-   /^\S+ tok \(.+\)$/.test(DL.children[5].textContent) && /^\S+ tok \(.+\)$/.test(DL.children[7].textContent),
-   DL.children[4].textContent + ' ' + DL.children[5].textContent + '  |  ' +
-   DL.children[6].textContent + ' ' + DL.children[7].textContent);
+   ['prefill', 'decode'].every((k) => /^\S+ tok \(.+\)$/.test((ROWS[k] || {}).value || '')) &&
+     (!AS.config.cache || /^\S+ tok \(.+\)$/.test((ROWS['prefill (cached)'] || {}).value || '')),
+   Object.keys(ROWS).filter((k) => /prefill|decode/.test(k)).map((k) => k + ' ' + ROWS[k].value).join('  |  '));
 /* every cell of every row is titled, so a row added later without a hover note
    fails here instead of being the one thing on the page nobody can explain */
 ok('every summary row explains itself on hover',
    DL.children.length % 2 === 0 && DL.children.every((c) => (c.getAttribute('title') || '').split(' ').length >= 6),
    DL.children.filter((c) => c.getAttribute('title')).length + '/' + DL.children.length + ' cells titled');
-/* the savings row belongs to the cache: with the toggle off it would sit at 0 ms
-   forever, so its presence must track the cache rather than the run */
-ok('cache savings row follows the cache toggle',
-   DL.children.some((c) => c.textContent === 'prefill saved by cache') === !!AS.config.cache,
-   AS.config.cache ? 'shown with the cache on' : 'hidden with the cache off');
+/* the curve card gets one word for its x-axis. It used to carry three — "prompt tok" in the
+   table, "prompt size" in the line under it, "prompt" in the point tooltips — and a rename
+   that reaches only the header leaves the rest of the view describing something nobody calls
+   that any more */
+const CURVE_TB = $('#curveTable');
+const curveHead = CURVE_TB && CURVE_TB.children[0] ? CURVE_TB.children[0].children.map((c) => String(c.textContent).trim()) : [];
+/* the header tail (theme, settings) sits at the right edge on every width. A stretchy spacer
+   pushed it right only while everything fitted on one line; once the header wrapped, the same
+   two buttons reappeared at the left edge of the next line, so the control you reach for
+   moved depending on the window. An auto margin holds the edge in both cases, and flex: 0 0
+   keeps the group from shrinking its own labels into two lines. */
+ok('the header tail is pinned to the right',
+   /\.tail \{[^}]*margin-left: auto/.test(STYLE) &&
+     /\.tail \{[^}]*flex: 0 0 auto/.test(STYLE) &&
+     html.indexOf('class="tail"') < html.indexOf('id="theme"') &&
+     html.indexOf('id="theme"') < html.indexOf('id="panelToggle"') &&
+     !/class="spacer"/.test(html),
+   'auto margin, no stretchy spacer left behind');
+ok('the curve card uses one word for its axis',
+   /^context size$/i.test(curveHead[0] || '') && /' context \u2192 '/.test(src) &&
+     /Throughput decay curve/.test(html),
+   'header "' + curveHead.join(' | ') + '"');
+/* two invariants on one row: it belongs to the cache (with the toggle off there would be no
+   reused prefix to count, so the row would report nothing forever), and it sits directly under
+   the cost it answers — between prefill and decode — rather than at the end of the card, where
+   the number would be read long after the reader stopped looking at the prompt */
+const SAVED_AT = ORDER.indexOf('prefill (cached)');
+ok('the cache saving follows the prefill row it answers',
+   AS.config.cache
+     ? SAVED_AT === ORDER.indexOf('prefill') + 1 && SAVED_AT < ORDER.indexOf('decode')
+     : SAVED_AT === -1,
+   AS.config.cache ? ORDER.slice(0, 4).join(' → ') : 'absent with the cache off');
+/* one word, one place: the toggle above the card is called prompt cache, so a summary row with
+   the same name and a value of "on" told you nothing the switch did not. The rows carry the
+   state now — no "(cached)" row, and a prefill count that jumps when the cache is off */
+ok('the card shows the cache instead of restating it',
+   !ORDER.includes('prompt cache') && /id="cacheName"[^>]*>prompt cache</.test(PANEL_CODE),
+   ORDER.join(' · '));
+/* the corpus split is measured with the cache on, so it is a reference only inside that regime
+   - against a cache-off run it would compare a cached-prefix engine with one that re-reads every
+   prompt whole. The row's value and its hover note have to agree on whether the comparison is
+   being made at all, or the note explains a number that is not on screen */
+const SPLIT_ROW = ROWS['prefill : decode'];
+const SPLIT_CELL = DL.children[ORDER.indexOf('prefill : decode') * 2 + 1];
+const SPLIT_REF = /corpus at defaults/.test(SPLIT_ROW.value);
+const SPLIT_NOTE = /default profile/.test(SPLIT_CELL.getAttribute('title') || '');
+ok('the corpus reference is quoted only in the regime it was measured in',
+   (!SPLIT_REF || !!AS.config.cache) && SPLIT_REF === SPLIT_NOTE,
+   SPLIT_ROW.value + '  |  ' + (SPLIT_NOTE ? 'note quotes it' : 'note stays quiet'));
 
 console.log('\nstats: ' + JSON.stringify(S, (k, v) => (typeof v === 'number' ? +v.toFixed(1) : v)));
 console.log('ledger:');
 for (const r of TL.reqs) console.log('  #' + r.no + ' ctx=' + r.ctx + ' queue=' + Math.round(r.queueMs) + 'ms prefill=' + Math.round(r.prefillMs) + 'ms avg=' + r.avgDecode.toFixed(1) + 't/s out=' + r.out);
-process.exit(errors.length ? 1 : 0);
+console.log('\n' + (checks - failed) + '/' + checks + ' checks passed' +
+  (errors.length ? ', ' + errors.length + ' runtime errors' : ''));
+process.exit(errors.length || failed ? 1 : 0);

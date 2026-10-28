@@ -61,7 +61,11 @@
     width: 100%; accent-color: var(--accent); background: var(--panel);
     border: 1px solid var(--border-2); border-radius: 5px; padding: 4px 6px; margin: 0 0 6px;
   }
-  .spacer { flex: 1 1 auto; }
+  /* the tail stays at the right edge whether it shares the header line or is pushed onto one
+     of its own. A stretchy spacer only worked while everything fitted on a single line; once
+     the header wrapped, the buttons sat at the left edge of the next line, so the same control
+     moved between the two ends of the bar depending on width. An auto margin pins the edge. */
+  .tail { margin-left: auto; display: flex; align-items: center; gap: 8px; flex: 0 0 auto; }
   .clock { color: var(--fg-dim); font-variant-numeric: tabular-nums; white-space: nowrap; }
   .clock b { color: var(--fg); font-weight: 600; }
 
@@ -140,6 +144,9 @@
     background: var(--bg-2); overflow-y: auto; padding: 10px;
   }
   body.no-panel .panel { display: none; }
+  /* panel visibility lives on the root element so the head script can close it on a narrow
+     window before first paint — a panel that shows and then vanishes is a flash */
+  html.no-panel .panel { display: none; }
 
   .msg { margin: 0 0 14px; opacity: 0; }
   .msg.shown { opacity: 1; }
@@ -180,9 +187,29 @@
   .card { border: 1px solid var(--border); border-radius: 8px; background: var(--panel); padding: 9px 10px; margin-bottom: 10px; }
   .card > h2 { font-size: 10px; letter-spacing: 1.4px; text-transform: uppercase; color: var(--fg-dim); margin: 0 0 8px; font-weight: 600; }
   .row { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
-  .row label { flex: 1 1 auto; color: var(--fg-dim); }
+  .row .cap { flex: 1 1 auto; color: var(--fg-dim); }
   .unit { color: var(--fg-dimmer); font-size: 11px; width: 46px; }
+  /* One line for the pair the group is about, with the units to the right of their fields as
+     everywhere else in the panel: the only concession to fitting both is a narrower unit
+     column, since "ms" does not need the 46px the engine's "tok/s" is sized for. The ±
+     between the fields reads as the relationship they have — jitter is the spread on that
+     same wait, not a second setting beside it — and the row may wrap rather than clip if the
+     panel ever gets tighter. */
+  .row.duo { flex-wrap: wrap; }
+  .row.duo .cap { white-space: nowrap; }
+  .row.duo input[type="number"] { width: 68px; flex: 0 0 auto; }
+  .row.duo .unit { width: auto; flex: 0 0 auto; }
+  .row.duo .pm { flex: 0 0 auto; color: var(--fg-dimmer); }
   .hint { color: var(--fg-dimmer); font-size: 11px; }
+  /* a group inside a card. Contention is a property of the engine rather than a thing next
+     to it, so the rows that model it are set off with a rule and a caption instead of being
+     promoted to a card of their own — the caption carries the definition on hover, the way
+     the summary rows do, so the card stays a list of controls */
+  .gsub {
+    margin: 10px 0 6px; padding-top: 8px; border-top: 1px solid var(--border);
+    color: var(--fg-dimmer); font-size: 10px; letter-spacing: .1em; text-transform: uppercase;
+    cursor: help;
+  }
   table { width: 100%; border-collapse: collapse; font-size: 11px; font-variant-numeric: tabular-nums; }
   th { text-align: left; color: var(--fg-dimmer); font-weight: 500; font-size: 10px; text-transform: uppercase; letter-spacing: .6px; padding: 2px 4px; }
   td { padding: 2px 4px; border-top: 1px solid var(--border); color: var(--fg-dim); }
@@ -211,11 +238,18 @@
   dl.summary dd.hi { font-weight: 600; }
   /* every row has a hover note, so say so with the cursor rather than leaving the
      definitions undiscoverable; same affordance as the seek bands */
-  dl.summary [title] { cursor: help; }
+  /* one documentation mechanism for the whole page: a native note on hover, and the cursor
+     says there is one to find */
+  dl.summary [title], .ctl[title], .row[title], .gsub[title], .hint[title] { cursor: help; }
   .kbd { border: 1px solid var(--border-2); border-bottom-width: 2px; border-radius: 4px; padding: 0 4px; color: var(--fg-dim); font-size: 11px; }
   @media (max-width: 900px) {
-    main { flex-direction: column; overflow-y: auto; }
-    .panel { width: 100%; flex: 0 0 auto; border-left: none; border-top: 1px solid var(--border); }
+    /* On a narrow window the panel is a view, not a sidebar. Stacked under the session it
+     started a screen below the phase bar and both halves were too short to read, so the two
+     swap instead: opening the panel takes everything under the bar, and closing it gives the
+     room back to the session. Each view scrolls itself, so main does not scroll as well. */
+    main { flex-direction: column; overflow: hidden; }
+    .panel { width: 100%; flex: 1 1 auto; min-height: 0; border-left: none; }
+    html:not(.no-panel) .transcript { display: none; }
   }
 </style>
 <script>
@@ -229,6 +263,12 @@
     : ((window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches) ? 'light' : 'dark');
   window.AS_THEME = t;
   document.documentElement.dataset.theme = t;
+  /* On a narrow window the panel is a whole view rather than a sidebar, so the two cannot be
+     up together. The session is the thing worth seeing, so it gets the space on load and
+     `panel` / `P` swaps between them. Decided here, before paint, for the same reason the
+     theme is: opening the panel should not be the page's first motion. */
+  if (window.matchMedia && window.matchMedia('(max-width: 900px)').matches)
+    document.documentElement.classList.add('no-panel');
 })();
 </script>
 </head>
@@ -242,13 +282,14 @@
   <select id="speed" title="Playback speed"></select>
   <div class="seek" id="seek"><div class="track"></div><div class="played"></div><div class="head"></div></div>
   <div class="clock"><b id="tcur">0.00s</b> / <span id="tdur">0.00s</span></div>
-  <div class="spacer"></div>
-  <button id="theme" title="Toggle theme">◐</button>
-  <button id="panelToggle" title="Toggle panel">panel</button>
+  <div class="tail">
+    <button id="theme" title="Toggle theme">◐</button>
+    <button id="panelToggle" title="Toggle settings (P)">settings</button>
+  </div>
 </header>
 
 <div class="phasebar" id="phase" data-phase="idle"
-     title="The phase the engine is in right now — queue, prefill, decode, and the harness's tool exec and turn gaps. The wash fills as that phase itself progresses. Click to step to the next phase, shift-click to step back.">
+     title="The phase the engine is in right now — queue, prefill, decode or the tool call execution. Click to step to the next phase, shift-click to step back.">
   <div class="fill"></div><span class="k">idle</span><span class="v">—</span><span class="next"></span>
 </div>
 
@@ -262,23 +303,29 @@
 
     <div class="card">
       <h2>Engine</h2>
-      <div class="row"><label for="prefill">prefill speed</label><input id="prefill" type="number" min="500" step="500"><span class="unit">tok/s</span></div>
-      <input id="prefillRange" type="range" min="0" max="100" step="0.5">
-      <div class="row"><label for="decode">decode speed</label><input id="decode" type="number" min="1" step="1"><span class="unit">tok/s</span></div>
-      <input id="decodeRange" type="range" min="0" max="100" step="0.5">
-      <div class="row"><label for="cache">prompt cache</label><input id="cache" type="checkbox"><span class="unit"></span></div>
-      <div class="hint" id="engineHint"></div>
+      <!-- the name is a caption, not a label pointing at the control: a browser suppresses the
+           title tooltip on such a label, and that is exactly the text you hover to learn what a
+           setting means. So the row carries the note once and everything inside it — caption,
+           field, unit, slider — answers with it by inheritance, while the control keeps its
+           accessible name through aria-labelledby. What is given up is click-to-focus on the
+           name; the field and slider are still clicked directly. -->
+      <div class="ctl" title="Tokens per second while processing the prompt. A request re-reads only the part of the context that is not cached (if enabled), that is, the part that was added since the last request. Prefill speed decays as the context grows, following the decay curve.">
+        <div class="row"><span class="cap" id="prefillName">prefill speed</span><input id="prefill" type="number" min="500" step="500" aria-labelledby="prefillName"><span class="unit">tok/s</span></div>
+        <input id="prefillRange" aria-label="prefill speed, as a slider" type="range" min="0" max="100" step="0.5">
+      </div>
+      <div class="ctl" title="Tokens per second while generating output: prose, chain of thought and tool-calls. Decode speed decays as the context grows, following the decay curve.">
+        <div class="row"><span class="cap" id="decodeName">decode speed</span><input id="decode" type="number" min="1" step="1" aria-labelledby="decodeName"><span class="unit">tok/s</span></div>
+        <input id="decodeRange" aria-label="decode speed, as a slider" type="range" min="0" max="100" step="0.5">
+      </div>
+      <div class="row" title="Cache prompt tokens between requests, so the engine does not have to re-process them on every turn. The cache is invalidated by a context compaction."><span class="cap" id="cacheName">prompt cache</span><input id="cache" type="checkbox" aria-labelledby="cacheName"><span class="unit"></span></div>
+      <div class="gsub"
+           title="Waits the engine imposes outside the model's own work. At zero, the run is a pure throughput model.">contention</div>
+      <div class="row duo" title="Time it takes for the engine to start working on a request."><span class="cap" id="latencyName">request latency</span><input id="latency" type="number" min="0" step="50" aria-labelledby="latencyName"><span class="pm" aria-hidden="true">±</span><input id="jitter" type="number" min="0" step="50" aria-label="time variation in the request latency, in ms" title="Time variation in the request latency, introducing some randomness to the wait."><span class="unit">ms</span></div>
+      <div class="hint" id="engineHint" title="Time to first token: time it takes to get the first token returned by the engine."></div>
     </div>
 
     <div class="card">
-      <h2>Contention</h2>
-      <div class="row"><label for="latency">per-request latency</label><input id="latency" type="number" min="0" step="50"><span class="unit">ms</span></div>
-      <div class="row"><label for="jitter">jitter (±)</label><input id="jitter" type="number" min="0" step="50"><span class="unit">ms</span></div>
-      <div class="hint">Paid once per request, before prefill. Jitter is deterministic — a link replays identically.</div>
-    </div>
-
-    <div class="card">
-      <h2>Context decay curve · <span id="curveN">N</span>-point</h2>
+      <h2>Throughput decay curve · <span id="curveN">N</span>-point</h2>
       <svg class="chart" id="curveChart" viewBox="0 0 320 132" preserveAspectRatio="none"></svg>
       <table id="curveTable"></table>
       <div class="btns">
@@ -288,7 +335,6 @@
         <button data-curve="cliff">cliff</button>
         <button id="addPoint">+ point</button>
       </div>
-      <div class="hint">Throughput multiplier vs. prompt size — prefill and decode both read it. Drag the points.</div>
     </div>
 
     <div class="card">
@@ -298,7 +344,7 @@
 
     <div class="card">
       <h2>Link</h2>
-      <input class="share" id="shareUrl" readonly>
+      <input class="share" id="shareUrl" aria-label="link that reopens this exact run" readonly>
       <div class="btns"><button id="copy">copy link</button><button id="reset">defaults</button></div>
       <div class="hint" style="margin-top:8px">
         <span class="kbd">space</span> play · <span class="kbd">R</span> restart · <span class="kbd">←→</span> seek · <span class="kbd">1..7</span> speed · <span class="kbd">P</span> panel
@@ -313,7 +359,7 @@
    Agentic Session Simulator
    Models the two faces of LLM inference: a prefill burst over the whole prompt,
    then a token-at-a-time decode that slows as session context grows, with an
-   optional per-request queue wait for a system under contention.
+   optional queue wait in front of each request, for a system under contention.
    ========================================================================== */
 
 /* ------------------------------- corpus ---------------------------------
@@ -926,7 +972,7 @@ function buildTimeline() {
     requests: reqs.length, outTokens: sum(r => r.out),
     queueMs: sum(r => r.queueMs), prefillMs: sum(r => r.prefillMs),
     decodeMs: sum(r => r.end - r.decodeStart) * 1000, toolMs, peakCtx: peak,
-    coldTokens: sum(r => r.cold),
+    coldTokens: sum(r => r.cold), cachedTokens: sum(r => r.cached),
     cacheSaveMs: sum(r => r.cacheSaveMs), gapMs: userGapMs + toolGapMs,
     compactions: items.filter(i => i.compact).length
   };
@@ -1175,7 +1221,13 @@ function countTokens(times, t) {
 function follow(item) {
   const el = item && item.el;
   if (!el) return;
+  /* a hidden pane has nothing to scroll: on a narrow window the panel replaces the
+     transcript, and writing to it every frame would be layout work for no pixels */
+  if (!transcript.clientHeight) return;
   const c = transcript.getBoundingClientRect(), b = el.getBoundingClientRect();
+  /* a pane with no height is not on screen — on a narrow window the panel replaces it — and
+     there is nothing to scroll, so do not write to it every frame */
+  if (c.bottom <= c.top) return;
   /* aim a little inside the pane rather than at its edge, so a line never sits flush
      against the border, where the pane's own padding would clip half of it */
   if (item.kind === 'assistant') {
@@ -1395,8 +1447,8 @@ function rebuild() {
   updateShare();
 }
 
-/* the reference split is quoted by the summary, so when the live run has moved
-   off the default profile say which corpus number is being quoted against */
+/* the reference split the summary quotes is measured at the default profile, which runs
+   with the cache on — see atDefaultProfile below, which counts the toggle */
 function atDefaultProfile() {
   const p = TL.params;
   return p.prefill === DEFAULTS.prefill && p.decode === DEFAULTS.decode
@@ -1412,64 +1464,57 @@ function updateSummary() {
      Every row carries a hover note, because the panel is the only place these
      definitions are written down and the numbers are not self-explanatory. */
   const TIPS = {
-    total: 'Wall time of the run: queue + prefill + decode + tool exec + turn gaps. '
-         + 'Playback speed changes how fast you watch it, not this.',
-    split: 'Total prefill time over total decode time. 12:1 means twelve seconds of '
-         + 'ingesting for every second of generating. It is a pooled ratio — every '
-         + 'request counts, weighted by how long each phase actually took.',
-    prefill: 'Prompt tokens the engine had to ingest, and the time they took, at prefill '
+    total: 'Wall time of the run: queue + prefill + decode + tool exec + turn gaps.',
+    split: 'Ratio between prefill and decode time. 1:1 means one second of prompt processing '
+         + 'for every second of decoding.',
+    prefill: 'Prompt tokens the engine had to process, and the total time it took, at prefill '
            + 'tok/s × the decay curve. ' + (TL.params.cache
-             ? 'The count is the fresh chunk, not the whole prompt — a cached prefix is '
-               + 'free and is counted nowhere; untick the cache and this becomes every '
-               + 'prompt read whole from its first token.'
-             : 'The cache is off, so the count is every prompt read whole from its first '
-               + 'token — the shared-endpoint case, where nothing is kept between turns.'),
-    decode: 'Time spent generating, one token at a time at decode tok/s × the curve. The '
-          + 'count is the whole token stream: assistant prose plus streamed tool-call '
-          + 'arguments. Those tokens stay in context afterwards' + (TL.params.cache
-            ? ', and the cache means the model is never charged for re-reading them.'
-            : ', and with the cache off the model pays to read them back in every turn.'),
-    tool: 'Wall time the tools themselves took — greps, test suites, migrations. '
-        + 'No inference happens while these run, and their output joins the context '
-          + 'the next request has to ingest.',
-    queue: 'Per-request scheduler wait: latency ± jitter, drawn from a fixed seed so '
-         + 'a shared link replays identically. Paid once per request, before prefill.',
-    gaps: 'Round trips between turns that belong to no phase: 150 ms before a user '
-        + 'message, 120 ms after a tool result. They are the reason the four phases '
-          + 'alone do not add up to the clock; with the gaps the sum is exact.',
-    requests: 'Model turns. Each is one request and pays queue, prefill and decode in '
-            + 'that order; a tool call is part of the request that made it.',
-    peak: 'The largest prompt of the session, reached before the harness compacted the '
-        + 'history away. Context only ever shrinks at a compaction.',
-    compactions: 'History collapses. Context drops back to the boot prompt plus the '
-               + 'summary, and everything past boot is new text again: the next '
-                 + 'request re-prefills it at full cost.',
-    final: 'Prompt size at the end of the session: boot + every message + every tool '
-         + 'result still resident. Tokens are whitespace-separated words, which '
-           + 'over-counts prose slightly and under-counts code.',
-    avgPrefill: 'Cold tokens ÷ prefill seconds — the two numbers on the prefill row '
-              + 'above. A token-weighted ingest rate of what actually had to be '
-                + 'ingested, so it sits at or below the prefill speed you set, by '
-                + 'however far the curve dips.',
-    avgDecode: 'Generated tokens ÷ decode seconds — the two numbers on the decode row '
-             + 'above — always at or below the decode speed you set. Pooling every '
-               + 'request is what pulls it below the early ones: the same tokens cost '
-               + 'more once the prompt is long.',
-    cache: 'On: a request ingests only what arrived since the last turn and reuses the '
-         + 'attention state held for everything before it — local inference, where the '
-           + 'KV cache stays resident. Off: every request re-reads its whole prompt, '
-           + 'which is a shared endpoint with no prefix reuse.',
-    saved: 'Prefill the cache avoided: ingesting each prompt cold, minus ingesting just '
-         + 'its fresh chunk. The percentage is of all the prefill work the session '
-           + 'could have done. It buys time, not throughput — the fresh chunk still '
-           + 'attends to the whole history.'
+             ? 'Prompt tokens that are already cached are not included in this count.'
+             : 'Repeated prompt tokens are re-read and re-processed on every turn.'),
+    decode: 'Time spent generating, one token at a time at decode tok/s × the curve.'
+          + (TL.params.cache
+            ? ' Once generated, tokens are cached and the model is never charged for re-reading them.'
+            : ''),
+    tool: 'Time spent in the harness executing tools. Does not involve the engine, but is part '
+        + 'of the total wall time.',
+    queue: 'Per-request scheduler wait: latency ± jitter, drawn from a fixed seed so a shared '
+         + 'link replays identically. Paid once per request, before prefill.',
+    gaps: 'Round trips between turns that belong to no phase: 150 ms before a user message, '
+        + '120 ms after a tool result. They are the reason the four phases alone do not add up '
+          + 'to the clock; with the gaps the sum is exact.',
+    requests: 'Number of steps taken by the harness. Each step is one prefill followed by one '
+            + 'decode, and may include a tool call. The harness pays queue, prefill and decode '
+              + 'in that order; a tool call is part of the request that made it.',
+    peak: 'The largest prompt of the session, reached before the harness compacted the history '
+        + 'away. Context only ever shrinks at a compaction.',
+    compactions: 'When the context is too large for the engine to handle, the harness compacts '
+               + 'it by rewriting the history into a smaller form. The next request re-prefills '
+                 + 'the context at full cost as compaction invalidated the cache.',
+    final: 'Context size at the end of the session.',
+    avgPrefill: 'Average prefill speed over the course of the session.',
+    avgDecode: 'Average decode speed over the course of the session.',
+    saved: 'Number of prefilled tokens read from the cache.'
   };
-  const splitTip = TIPS.split + ' This scenario at the default profile: ' + TL.session.split + '.';
+  /* quote the corpus number only while the run is in the regime it was measured in: off the
+     default profile inside that regime the comparison is worth making, and with the cache off it
+     is worse than useless, because it would set a cached-prefix run's ratio against a run that
+     re-reads every prompt whole. Same two words, two different engines. */
+  const refSplit = !!TL.params.cache && !atDefaultProfile();
+  const splitTip = TIPS.split +
+    (refSplit ? ' This scenario at the default profile: ' + TL.session.split + '.' : '');
+  /* the saving reads best where the cost was just stated: directly under prefill, so it
+     answers the row above it, and above decode, which takes the reader off the prompt.
+     With the cache off there is nothing saved to report — the row would read
+     "0 ms (0%)" forever, so it belongs to the cache, not to the run */
+  const saved = TL.params.cache
+    ? ['prefill (cached)', fmtTok(s.cachedTokens) + ' tok (' + fmtDur(s.cacheSaveMs / 1000) + ')', 0, TIPS.saved]
+    : null;
   const rows = [
     ['total', fmtDur(TL.duration), 1, TIPS.total],
     ['prefill : decode', pfDk(s.prefillMs, s.decodeMs) +
-      (atDefaultProfile() ? '' : '   (corpus at defaults ' + TL.session.split + ')'), 1, splitTip],
+      (refSplit ? '   (corpus at defaults ' + TL.session.split + ')' : ''), 1, splitTip],
     ['prefill', fmtTok(s.coldTokens) + ' tok (' + fmtDur(s.prefillMs / 1000) + ')', 0, TIPS.prefill],
+    ...(saved ? [saved] : []),
     ['decode', fmtTok(s.outTokens) + ' tok (' + fmtDur(s.decodeMs / 1000) + ')', 0, TIPS.decode],
     ['tool exec', fmtDur(s.toolMs / 1000), 0, TIPS.tool],
     ['queue wait', fmtDur(s.queueMs / 1000), 0, TIPS.queue],
@@ -1481,14 +1526,12 @@ function updateSummary() {
   rows.push(
     ['final context', fmtTok(TL.ctx) + ' tok', 0, TIPS.final],
     ['avg prefill', (s.coldTokens / Math.max(1e-9, s.prefillMs / 1000)).toFixed(0) + ' tok/s', 0, TIPS.avgPrefill],
-    ['avg decode', (s.outTokens / Math.max(1e-9, s.decodeMs / 1000)).toFixed(0) + ' tok/s', 0, TIPS.avgDecode],
-    ['prompt cache', TL.params.cache ? 'on · instant reads' : 'off · full re-prefill', 0, TIPS.cache]
+    ['avg decode', (s.outTokens / Math.max(1e-9, s.decodeMs / 1000)).toFixed(0) + ' tok/s', 0, TIPS.avgDecode]
   );
-  /* with the cache off there is nothing saved to report — the row would read
-     "0 ms (0%)" forever, so it belongs to the cache, not to the run */
-  if (TL.params.cache) rows.push(['prefill saved by cache', fmtDur(s.cacheSaveMs / 1000) + ' (' +
-    (s.prefillMs + s.cacheSaveMs > 0 ? (100 * s.cacheSaveMs / (s.prefillMs + s.cacheSaveMs)).toFixed(0) : '0') + '%)',
-    0, TIPS.saved]);
+  /* the cache toggle used to have its own row here, restating the switch above. The rows say it
+     better: with the cache off the "(cached)" row is gone and the prefill count jumps, so the
+     card shows the state instead of repeating it */
+
   const dl = $('#summary');
   dl.textContent = '';
   for (const [k, v, hi, tip] of rows) {
@@ -1541,7 +1584,7 @@ function drawCurve() {
     const c = mk('circle', { cx: pts[i][0], cy: pts[i][1], r: 4.5 });
     c.dataset.i = String(i);
     const tip = document.createElementNS(SVG_NS, 'title');
-    tip.textContent = fmtTok(p.ctx) + ' prompt → ' + p.mult + '% speed';
+    tip.textContent = fmtTok(p.ctx) + ' context → ' + p.mult + '% speed';
     c.appendChild(tip);
   });
   $('#curveN').textContent = String(config.curve.length);
@@ -1560,7 +1603,7 @@ function drawCurveTable() {
   const tbl = $('#curveTable');
   tbl.textContent = '';
   const head = document.createElement('tr');
-  ['prompt tok', 'speed %', ''].forEach(h => head.appendChild(el('th', null, h)));
+  ['context size', 'speed %', ''].forEach(h => head.appendChild(el('th', null, h)));
   tbl.appendChild(head);
   config.curve.forEach((p, i) => {
     const tr = document.createElement('tr');
@@ -1679,15 +1722,21 @@ const fromRange = (p, r) => {
   return Math.max(r[0], Math.round(v));
 };
 
+/* the standing note under the engine controls, and the one thing it says when no control is
+   being asked about */
+const HINT_TTFT = 'TTFT ≈ queue + prefill + decode 1 token';
 function syncEngine() {
   $('#prefill').value = String(config.prefill);
   $('#decode').value = String(config.decode);
   $('#prefillRange').value = String(toRange(config.prefill, RANGE.prefill));
   $('#decodeRange').value = String(toRange(config.decode, RANGE.decode));
   $('#cache').checked = !!config.cache;
-  $('#engineHint').textContent = 'TTFT ≈ queue + new tokens / prefill · first token at ' +
-    effRate(config.decode, config.curve, 0).toFixed(0) + ' tok/s · curve throttles both phases' +
-    (config.cache ? ' · prefix served free from cache' : ' · no cache, whole prompt each turn');
+  /* one line, three durations, in the order the phases happen. It stays a sum because that is
+     all the reader needs here: rates and the curve belong on the hover, and a rate in place of
+     a duration is wrong twice over — it understates prefill on every curve below 100%, and it
+     implies TTFT is decode-bound when it is prefill-bound. The third term is not decoration:
+     the first token is placed one decode step after prefill ends, not on the boundary. */
+  $('#engineHint').textContent = HINT_TTFT;
 }
 function syncContention() {
   $('#latency').value = String(config.latency);
@@ -1769,7 +1818,7 @@ $('#theme').addEventListener('click', () => {
   document.documentElement.dataset.theme = config.theme;
   updateShare();
 });
-$('#panelToggle').addEventListener('click', () => document.body.classList.toggle('no-panel'));
+$('#panelToggle').addEventListener('click', () => document.documentElement.classList.toggle('no-panel'));
 /* shift steps backwards, so one rectangle covers both directions */
 $('#phase').addEventListener('click', (e) => stepPhase(e.shiftKey ? -1 : 1));
 $('#reset').addEventListener('click', () => { location.href = location.pathname; });
@@ -1834,7 +1883,7 @@ document.addEventListener('keydown', (e) => {
   else if (e.key === 'r' || e.key === 'R') { userScrolled = false; seek(0); play(); }
   else if (e.key === 'ArrowRight') { e.preventDefault(); seek(vTime + (e.shiftKey ? 5 : 1)); }
   else if (e.key === 'ArrowLeft') { e.preventDefault(); seek(vTime - (e.shiftKey ? 5 : 1)); }
-  else if (e.key === 'p' || e.key === 'P') document.body.classList.toggle('no-panel');
+  else if (e.key === 'p' || e.key === 'P') document.documentElement.classList.toggle('no-panel');
   else if (e.key >= '1' && e.key <= String(SPEEDS.length)) {
     config.speed = SPEEDS[Number(e.key) - 1];
     speedSel.value = String(config.speed);

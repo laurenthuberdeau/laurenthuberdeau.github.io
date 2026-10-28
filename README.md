@@ -3,7 +3,7 @@
 Agentic session simulator demonstrates the feel of the different phases of LLM inference.
 That is, prefill and decode. The simulator allows configurable prefill and decode speed,
 with a N-point curve to simulate the slowdown that accompanies longer sessions, and a
-per-request latency option to simulate a system under contention.
+request latency option to simulate a system under contention.
 
 Implemented as an all-in-one HTML file, with query parameters allowing a quick linking to
 a predefined configuration.
@@ -39,7 +39,7 @@ Every model turn is one request, and every request pays four phases in order:
 
 Context starts at the session's boot tokens (system prompt, tool schemas, repo map) and
 grows with every message and tool result, so later requests get slower at both phases. The
-decay curve is one piecewise-linear N-point multiplier over prompt size that prefill and
+decay curve is one piecewise-linear N-point multiplier over context size that prefill and
 decode share — a longer prompt costs more per token whether the work is ingesting it or
 generating against it — editable by table or by dragging points on the chart. Prefill is
 charged in 512 token blocks so the curve is integrated rather than sampled once, which also
@@ -98,7 +98,14 @@ it, the next request. That is how you compare one prefill against the next witho
 the edge of a band with the pointer; the seek bar itself still scrubs freely by click or drag.
 
 `space` play/pause · `R` restart · `←` `→` seek one second (`shift` for five) ·
-`1`–`7` playback speed · `P` toggle panel.
+`1`–`7` playback speed · `P` toggle settings.
+
+Below 900px the settings card stack stops being a sidebar and becomes a second view: the
+**settings** button or `P` swaps the session and the panel for each other, and whichever is up
+takes the whole space under the phase bar. Stacked, the summary started a screen below the bar
+with the boot step still peeking over it and neither half was tall enough to read. On a narrow
+window the session gets that space when the page loads, so opening settings is your move, not
+the page's.
 
 The transcript follows the run by itself. A message that is still streaming is held a hand's
 width above the bottom edge of the pane, so the live line stays the live line; a block that
@@ -128,17 +135,51 @@ shows every call it made.
 The **session summary is the first card in the
 panel**, because it is the thing you come back to after every settings change: it leads with
 `total` and `prefill : decode` — the split between the two faces of inference, `12:1` for
-`long-log`, `0.54:1` for `doc` — then the phases, the context, and how much prefill the prompt
-cache saved (a row that belongs to the cache, so it is simply absent when the cache is off —
-there is no saving to report at `0 ms (0%)`). Each phase row carries its tokens next to its
-time — `prefill 125k tok (2m 27s)`, `decode 325 tok (12.65 s)` — so the two `avg` rows below are
-the division of two numbers you have just read, not another thing to remember. The split is
-measured from the timeline, and when the live settings are off the default profile the row also
-quotes the corpus's own number at that profile, so the two cannot be confused. Every row has a
+`long-log`, `0.54:1` for `doc` — then the phases, the context, and what the prompt cache
+avoided. Three rows share one shape, `125k tok (2m 27s)`, so the card reads as columns:
+
+```
+prefill             125k tok (2m 27s)
+prefill (cached)    283k tok (4m 37s)
+decode              325 tok (12.65s)
+```
+
+`prefill` is what the engine had to ingest and `prefill (cached)` what it did not, sitting
+under the cost it answers rather than at the end of the card where it would be read long after
+the reader stopped looking at the prompt. The `(cached)` row belongs to the cache, so with the
+toggle off it is gone and `prefill` becomes the whole prompt — `409k tok (7m 4s)` for the same
+`long-log` run, the two rows above added back together. That is why the toggle does not get a
+row of its own any more: those rows show the state, where the old `prompt cache: on · instant
+reads` line only restated the switch above. Each row pairs its tokens with its time, so the two
+`avg` rows below are the division of two numbers you have just read, not another thing to
+remember. The split is measured from the timeline. When the live settings are off the default
+profile the row also quotes the corpus's own number at that profile, so the two cannot be
+confused — but only with the cache on, because that is the regime the corpus number was measured
+in. With the cache off the reference is dropped instead of carried across: `34:1` against a
+cached `12:1` would be two different engines wearing one label, and the hover note drops the
+quotation with the value, so the note never explains a number that is not on screen. Every row has a
 hover note — the cursor goes to `help` over the card — because the panel is where these
 definitions live: which tokens each rate counts, what the cache does and does not make free, and
-why the four phases need the turn gaps to add up to the clock. Then the panel holds engine
-speed, the prompt cache toggle, contention, the decay curve, and a per-request ledger whose
+why the phases need the turn gaps to add up to the clock. Then the panel holds the engine
+card — throughput, the prompt cache toggle, and contention (the request wait) as a group under
+the same heading. Every control in it carries a **hover note of its own**, the same way the
+summary rows do — one note per row, on the row itself, so the name, the field, the unit and the
+slider all answer the same hover by inheritance. The name is a caption rather than a label
+pointing at the control, because a browser suppresses the title tooltip on exactly that element,
+and it is the one thing you hover to learn what a setting means. The control keeps its accessible
+name through `aria-labelledby`; what that trades away is click-to-focus on the name, so the field
+and the slider are clicked directly. Prefill and decode name what their rate counts and say it
+decays as the context grows, following the decay curve; the cache toggle says what the engine
+stops re-processing and that a compaction invalidates it; the request wait says what the engine
+waits on before it starts work, and the spread answers for itself inside the row because the
+nearest note is the one you get. The summary card reuses the same vocabulary loosely — it speaks
+of `prefill tok/s × the decay curve` where the engine card says the speed "decays as the context
+grows" — and the two are deliberately free to phrase things differently. One documentation
+mechanism for the whole page — native, on
+hover, `help` cursor to say it is there — rather than a bubble of the page's own that only half
+the surface uses. The line under the controls stays what it always was: `TTFT ≈ queue + prefill +
+decode 1 token`, with its own note on the terms. After the engine card come the decay curve and a
+per-request ledger whose
 `prefilled` column shows how much of each prompt was actually ingested. Curve table cells commit
 when the field loses focus, or on `enter`; `escape` puts the old number back. Switching
 scenario pauses and rewinds to zero rather than rolling straight into the new run, so
@@ -164,7 +205,7 @@ own duration.
 | `prefill`, `p`        | prefill speed in tok/s                               |
 | `decode`, `d`         | decode speed in tok/s, before the curve              |
 | `cache`, `c`          | prompt cache, `1` on (default) or `0` off            |
-| `latency`, `l`        | per-request queue wait in ms                         |
+| `latency`, `l`        | queue wait in front of each request, in ms           |
 | `jitter`              | ± jitter on that wait in ms, drawn from a fixed seed  |
 | `curve`               | `flat`, `gentle`, `steep`, `cliff`, or `ctx:mult` points such as `0:100,32000:60` |
 | `speed`, `s`          | playback speed `0.25`–`16`                           |
@@ -217,6 +258,13 @@ row carries a hover note, and a row that describes a setting only appears while 
 on — which also means the checks restore the URL profile before reading the markup, so they
 describe the page rather than whatever the UI probe tested last. Adding a scenario that does not
 satisfy them fails here rather than in the dropdown.
+
+Two rules keep the harness itself honest. A failing check fails the run: `ok` counts failures and
+the process exits non-zero, because a harness that prints `FAIL` and exits 0 tells whatever is
+watching exit codes that the build is fine. And the shim memoizes attribute-selector lookups, so a
+test that re-queries `[data-curve]` gets back the very nodes the page attached
+its listeners to. Before that, a battery dispatching clicks on freshly built buttons drove nothing
+and stayed green — which is how the curve presets went untested while looking tested.
 
 ```sh
 node tools/selftest.mjs index.html "?session=long-log&autoplay=0"
