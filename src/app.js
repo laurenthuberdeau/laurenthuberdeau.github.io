@@ -132,7 +132,7 @@ const CURVES = {
    the number it names; the selftest clicks each one and reads it back. */
 const PROFILES = {
   local: {
-    name: 'local', prefill: 1500, decode: 50, latency: 300,
+    name: 'local', prefill: 750, decode: 50, latency: 300,
     note: 'A model on your own hardware: slow prefill and acceptable decode with low request latency.'
   },
   API: {
