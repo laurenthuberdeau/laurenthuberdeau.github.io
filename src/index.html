@@ -19,9 +19,9 @@
   window.AS_THEME = t;
   document.documentElement.dataset.theme = t;
   /* On a narrow window the panel is a whole view rather than a sidebar, so the two cannot be
-     up together. The session is the thing worth seeing, so it gets the space on load and
-     `panel` / `P` swaps between them. Decided here, before paint, for the same reason the
-     theme is: opening the panel should not be the page's first motion. */
+     up together. The session is the thing worth seeing, so it gets the space on load and the
+     **settings** button in the header swaps between them. Decided here, before paint, for the same
+     reason the theme is: opening the panel should not be the page's first motion. */
   if (window.matchMedia && window.matchMedia('(max-width: 900px)').matches)
     document.documentElement.classList.add('no-panel');
 })();
@@ -38,8 +38,9 @@
   <div class="seek" id="seek" role="slider" tabindex="0" aria-label="seek the run" aria-valuemin="0"><div class="track"></div><div class="played"></div><div class="head"></div></div>
   <div class="clock"><b id="tcur">0.00s</b> / <span id="tdur">0.00s</span></div>
   <div class="tail">
+    <button id="introBtn" title="What this is, and the shortcuts" aria-label="about this tool">?</button>
     <button id="theme" title="Toggle theme" aria-label="toggle theme">◐</button>
-    <button id="panelToggle" title="Toggle settings (P)" aria-expanded="false">settings</button>
+    <button id="panelToggle" title="Toggle settings" aria-expanded="false">settings</button>
   </div>
 </header>
 
@@ -102,6 +103,71 @@
 
   </aside>
 </main>
+
+<div class="backdrop" id="introBackdrop" hidden></div>
+<!-- the guide: what the tool is, the phases and settings it works from, and two sessions to start
+     with. Static prose in markup, because it is read rather than driven; the two cards under it are
+     the only part the script fills, because their numbers are measured at the settings in force. It
+     sits before the picker in the document so the picker, on the same z-index, stacks above it. -->
+<div class="introModal" id="introModal" role="dialog" aria-modal="true"
+     aria-labelledby="introTitle" tabindex="-1" hidden>
+  <header class="pickHead">
+    <h2 id="introTitle">Agentic Session Simulator</h2>
+    <button id="introClose" class="primary" title="Close (Esc)">✕ close</button>
+  </header>
+
+  <div class="introBody">
+    <p>Simulates a coding-agent session, showing how the inference engine spends its time and what it
+      is doing at every instant. Useful to understand how different performance parameters affect the
+      user experience.</p>
+
+    <p>A session is a sequence of turns, each turn being split in the following phases:</p>
+    <ul class="legend">
+      <li><i class="dot q"></i><span><b>queue</b> — the request waits on the engine to start processing it.</span></li>
+      <li><i class="dot p"></i><span><b>prefill</b> — the engine reads the prompt and any prior context, and prepares to generate an answer.</span></li>
+      <li><i class="dot d"></i><span><b>decode</b> — the engine writes the answer, and streams it back one token at a time.</span></li>
+      <li><i class="dot t"></i><span><b>tool exec</b> — the harness runs a command and waits for its completion.</span></li>
+    </ul>
+
+    <h3>How to use</h3>
+    <ul class="steps">
+      <li><b>▶ run</b> starts the session; <b>❚❚ pause</b> pauses the session.</li>
+      <li>The <b>header bar</b> displays a timeline of the whole run, with the current phase
+        highlighted.<br><b>Click</b> or <b>drag</b> it to skip to any point in the run.</li>
+      <li>The <b>phase bar</b> under the header displays the current phase and fills as that phase
+        runs.<br><b>Click</b> it to step to the next phase, <b>shift-click</b> to step to the one
+        before.</li>
+      <li>Play with the <b>settings</b> on the right to see how they affect the session metrics and
+        user experience.</li>
+    </ul>
+
+    <p>Pick a pre-recorded session to start:</p>
+    <div class="introShapes" id="introShapes"></div>
+
+    <h3>Inference engine options</h3>
+    <ul class="specs">
+      <li><b>prefill speed</b> — rate at which the engine can read the prompt and context.</li>
+      <li><b>decode speed</b> — rate at which the engine can generate and stream the answer.</li>
+      <li><b>prompt caching</b> — whether the engine re-reads the prompt and context every turn, or
+        reuses them.</li>
+      <li><b>request latency</b> — how long the request waits before the engine starts processing it.</li>
+      <li><b>throughput decay curve</b> — how the engine’s throughput decreases as the request size increases.</li>
+    </ul>
+
+    <h3>Shortcuts</h3>
+    <dl class="keys">
+      <dt>space</dt><dd>play / pause</dd>
+      <dt>R</dt><dd>restart from zero</dd>
+      <dt>← →</dt><dd>seek one second, <b>shift</b> five</dd>
+      <dt id="introSpeedKeys">1 – 7</dt><dd>playback speed, <span id="introSpeedRange">0.25× – 16×</span></dd>
+      <dt>esc</dt><dd>close the panel in front</dd>
+    </dl>
+  </div>
+
+  <footer class="introFoot">
+    <button id="introBrowse">browse all sessions →</button>
+  </footer>
+</div>
 
 <div class="backdrop" id="scenarioBackdrop" hidden></div>
 <div class="pickerModal" id="scenarioPicker" role="dialog" aria-modal="true"

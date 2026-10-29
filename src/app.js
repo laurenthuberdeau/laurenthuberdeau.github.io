@@ -88,7 +88,10 @@ const DEFAULTS = {
   /* the page opens parked: the run is something you start rather than something that starts
      at you. `autoplay=1` is the opt-in for a page that plays itself, and a link copied from a
      page that was playing carries it, so a shared run still replays on its own */
-  speed: 1, curve: 'steep', autoplay: 0
+  speed: 1, curve: 'steep', autoplay: 0,
+  /* and it opens on the guide, which is the one place the page explains itself. `intro=0` is the
+     opt-out a link can carry, for a run sent to somebody who has already read it */
+  intro: 1
 };
 
 const Q = new URLSearchParams(location.search);
@@ -179,6 +182,7 @@ const config = {
   cache:    qbool('cache', !!DEFAULTS.cache),
   speed:    readSpeed(),
   autoplay: qbool('autoplay', !!DEFAULTS.autoplay),
+  intro:    qbool('intro', !!DEFAULTS.intro),
   /* the head script resolves the theme before first paint; this is only a fallback */
   theme:    window.AS_THEME || 'dark',
   curve:    resolveCurve(Q.get('curve'))
@@ -1374,25 +1378,124 @@ function openPicker() {
   buildPicker();
   picker.hidden = false;
   backdrop.hidden = false;
-  document.documentElement.classList.add('modal-open');
+  syncModalLock();
   const cur = listEl.querySelector('[aria-selected="true"]') || listEl.firstElementChild;
   (cur || picker).focus();
 }
 function closePicker() {
   picker.hidden = true;
   backdrop.hidden = true;
-  document.documentElement.classList.remove('modal-open');
-  pickBtn.focus();
+  syncModalLock();
+  /* focus goes back where the picker was opened from, which is the guide when the reader came
+     from the guide — otherwise leaving the list drops the caret on a button behind a panel that
+     is still up */
+  if (intro.hidden) pickBtn.focus(); else introBrowse.focus();
 }
 
 pickBtn.addEventListener('click', () => (picker.hidden ? openPicker() : closePicker()));
 backdrop.addEventListener('click', closePicker);
 $('#pickClose').addEventListener('click', closePicker);
-document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape' && !picker.hidden) { e.stopPropagation(); closePicker(); }
-});
 updatePickerButton();
 buildPicker();
+
+/* --------------------------- the guide pop-up ---------------------------
+   The page opens on an explainer rather than on a run nobody asked for: what the tool measures,
+   the two shapes a session comes in, and the shortcuts. It offers a start rather than a lecture —
+   each card names the scenario it will load and measures it at the settings in force, the same
+   way the picker does, so the numbers on the card are the run you get and not a reference profile.
+
+   Two shapes because the one thing a first reader cannot guess is that prefill and decode pull in
+   opposite directions: the same harness is a different machine depending on whether the engine is
+   reading or writing, and looking at one of them tells you nothing about the other. The rest of
+   the corpus is the space between these two ends and is one click further, in the picker.
+
+   It stands aside when asked to — `?intro=0`, which a link can carry, or a run told to play itself
+   — and the `?` in the header brings it back: an explainer you can only read once is an explainer
+   you cannot read. The ✕, the backdrop or `esc` puts it away. There is deliberately no preference
+   stored for it. The page is a file you open from disk and read again, and a guide you cannot get
+   back to is worse than one you see twice. */
+const intro = $('#introModal'), introBackdrop = $('#introBackdrop'), introBtn = $('#introBtn'),
+      introShapes = $('#introShapes'), introBrowse = $('#introBrowse');
+/* the two ends of the corpus. Named by id so the guide says which session it is loading; the
+   selftest holds them to their billing, so a corpus that stops being shaped this way fails
+   loudly instead of quietly printing the wrong label over the right card. */
+const INTRO_SHAPES = [
+  { id: 'greenfield', kicker: 'decode-heavy',
+    copy: 'A chat-shaped turn: a small prompt, a long answer. The engine spends more time writing '
+        + 'than reading, so decode — the green band — is the one to watch, and the run is short '
+        + 'enough to watch twice.' },
+  { id: 'long-log', kicker: 'prefill-heavy',
+    copy: 'Almost the whole run is prefill: a wall of context re-read from the start on every turn '
+        + 'to produce a paragraph, and that amber is the cost of the context, not of the answer.' },
+];
+
+/* localStorage is not used anywhere on this page, and the guide is the reason it is not: the one
+   thing worth remembering would be "stop explaining", and a page that can be opened straight from
+   disk is an opaque origin where storage may be refused outright. */
+
+function buildIntro() {
+  introShapes.innerHTML = '';
+  for (const sh of INTRO_SHAPES) {
+    const s = SESSIONS.find((x) => x.id === sh.id);
+    if (!s) continue;
+    const ref = scenarioStats(s.id);
+    const b = el('button', 'shape');
+    b.type = 'button';
+    b.title = 'Load ' + s.name + ' and start the run';
+    b.appendChild(el('span', 'shapeKicker', sh.kicker));
+    b.appendChild(el('span', 'shapeName', s.name));
+    b.appendChild(el('span', 'shapeCopy', sh.copy));
+    b.appendChild(el('span', 'shapeStats',
+      ratioLabel(ref.in, ref.out) + ' · ' + fmtDur(ref.total) + ' · ' +
+      s.steps.filter((x) => x.role === 'assistant').length + ' turns'));
+    b.appendChild(el('span', 'shapeGo', 'load and run →'));
+    /* choosing a shape IS the ask, so this one starts the clock — the page opens parked because
+       it should not start by itself, not because pressing a button should do nothing */
+    b.addEventListener('click', () => {
+      closeIntro();
+      selectScenario(s.id);
+      play();
+    });
+    introShapes.appendChild(b);
+  }
+  introBrowse.textContent = 'browse all ' + SESSIONS.length + ' sessions →';
+  introBrowse.title = 'The full corpus, measured at these settings';
+  /* the keys name the speed range rather than restating it, so the list cannot claim a key the
+     transport does not implement */
+  $('#introSpeedKeys').textContent = '1 – ' + SPEEDS.length;
+  $('#introSpeedRange').textContent = SPEEDS[0] + '× – ' + SPEEDS[SPEEDS.length - 1] + '×';
+}
+
+/* one lock for the page: the two panels share it, so leaving the picker does not unlock the
+   scroll behind the guide that is still up */
+function syncModalLock() {
+  document.documentElement.classList.toggle('modal-open', !picker.hidden || !intro.hidden);
+}
+
+function openIntro() {
+  /* measured on every open, for the same reason the picker is: the cards quote the settings you
+     have, so a guide opened after you moved the sliders is not the guide that opened on load */
+  buildIntro();
+  intro.hidden = false;
+  introBackdrop.hidden = false;
+  syncModalLock();
+  intro.focus();
+}
+function closeIntro() {
+  intro.hidden = true;
+  introBackdrop.hidden = true;
+  syncModalLock();
+  /* back to the button that opens it, so closing the panel has not also dropped the keyboard on a
+     page the reader was not looking at */
+  introBtn.focus();
+}
+
+introBtn.addEventListener('click', () => (intro.hidden ? openIntro() : closeIntro()));
+$('#introClose').addEventListener('click', closeIntro);
+introBackdrop.addEventListener('click', closeIntro);
+/* the guide steps aside for the picker rather than stacking on it: two panels over one page is
+   a page you have to close twice to see */
+introBrowse.addEventListener('click', () => { closeIntro(); openPicker(); });
 
 const speedSel = $('#speed');
 for (const s of SPEEDS) {
@@ -1502,19 +1605,39 @@ transcript.addEventListener('scroll', () => {
 }, { passive: true });
 
 document.addEventListener('keydown', (e) => {
-  /* never hijack browser shortcuts (Cmd/Ctrl/Alt), typing in fields, or the space/enter a
-     focused button needs for itself — but a focused button must not swallow the arrows */
+  /* never hijack browser shortcuts (Cmd/Ctrl/Alt) or typing in a field */
   if (e.metaKey || e.ctrlKey || e.altKey) return;
   const tag = e.target && e.target.tagName;
   if (tag && /^(INPUT|SELECT|TEXTAREA)$/.test(tag)) return;
-  if (tag === 'BUTTON' && (e.code === 'Space' || e.key === 'Enter')) return;
+  /* `esc` belongs to the panel on top, and takes only that one. The picker stacks over the guide,
+     so one press leaves the guide where it was: the key that reads as "back" should not also
+     throw away a panel nobody asked to leave. With both down the key is mute, as it always was —
+     there is nothing to go back from, and it must not be mistaken for a transport key. It is
+     checked ahead of the button rule below so a caret sitting on a panel's own ✕ still gets out. */
+  if (e.key === 'Escape') {
+    if (picker.hidden && intro.hidden) return;
+    if (e.stopPropagation) e.stopPropagation();
+    if (!picker.hidden) closePicker(); else closeIntro();
+    return;
+  }
+  /* Enter is the focused button's own key, and inside a dialog so is space — that is how the ✕ and
+     the session rows are worked. Out here space is the transport's whatever was last clicked: a
+     click leaves the caret on the button, and a panel hands it back to the button it was opened
+     from, so a button that answered space would replay that click — put the guide away and press
+     space, and the guide comes back instead of the run starting. The button gives the caret up
+     first, because the browser activates a focused button on keyup and one press must be one
+     action. `r`, the arrows and the speed digits answer with the caret on a button as they did. */
+  if (tag === 'BUTTON' && e.key === 'Enter') return;
+  if (tag === 'BUTTON' && e.code === 'Space' && (!picker.hidden || !intro.hidden)) return;
+  if (tag === 'BUTTON' && e.code === 'Space' && e.target.blur) e.target.blur();
+  /* a panel is a dialog: while one is up, the transport keys would answer to the page behind it,
+     which the reader cannot see. The panel is closed from its own controls, the backdrop or `esc`,
+     so nothing reaches the transport until it is back on screen */
+  if (!picker.hidden || !intro.hidden) return;
   if (e.code === 'Space') { e.preventDefault(); togglePlay(); }
   else if (e.key === 'r' || e.key === 'R') restart();
   else if (e.key === 'ArrowRight') { e.preventDefault(); seek(vTime + (e.shiftKey ? 5 : 1)); }
   else if (e.key === 'ArrowLeft') { e.preventDefault(); seek(vTime - (e.shiftKey ? 5 : 1)); }
-  else if (e.key === 'p' || e.key === 'P') {
-    document.documentElement.classList.toggle('no-panel'); syncPanelToggle();
-  }
   else if (/^[1-9]$/.test(e.key) && Number(e.key) <= SPEEDS.length) {
     config.speed = SPEEDS[Number(e.key) - 1];
     speedSel.value = String(config.speed);
@@ -1536,8 +1659,15 @@ if (config.autoplay) play(); else { updatePlayBtn(); render(vTime); }
 /* the console and the selftest both want to know where the playhead actually is, as
    opposed to what the clock says after formatting */
 window.AS = { config, sessions: SESSIONS, scenarioStats,
-              get tl() { return TL; }, get vTime() { return vTime; },
+              get tl() { return TL; }, get vTime() { return vTime; }, get playing() { return playing; },
               rebuild, seek, play, pause, phaseAt, render, stepPhase, selectSession: selectScenario,
-              openPicker, closePicker };
+              openPicker, closePicker, openIntro, closeIntro,
+              /* a copy, not the live collection: `children` empties itself when the guide rebuilds,
+                 so a caller that grabbed it first would watch it drain */
+              introShapes: () => Array.from(introShapes.children) };
+/* the guide goes up last, over a page already drawn behind it, so it is read against the real
+   thing rather than an empty pane. It keeps out of the way of a run told to play itself, and of a
+   link that asked for the page without the lecture. */
+if (config.intro && !config.autoplay) openIntro();
 
 })();

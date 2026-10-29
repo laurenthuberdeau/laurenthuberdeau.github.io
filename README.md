@@ -129,6 +129,36 @@ tokens by how much history they have to attend to.
 
 ## Controls
 
+### The guide
+
+The page opens on a panel that says what it is: the four phases a turn splits into, how the page is
+worked, the two sessions to start with, and then the options the engine offers and the keys that
+work it — the last two being what the body scrolls to reach, so the picker is the last thing put in
+front of you rather than the last thing the panel has. It is not a tour you get once — the **`?`**
+in the header brings it back, and its ✕, a click on the backdrop or `esc` puts it away. The phase
+names carry the same colours the bands wear, and every option it lists is held to the field in the
+settings panel that changes it, so the panel cannot advertise a dial nobody built.
+
+It also offers a starting point rather than an empty page, because the one thing a first reader
+cannot guess is that prefill and decode pull in opposite directions. Two cards, two ends of the
+corpus:
+
+| card | loads | at the shipped profile |
+|------|-------|------------------------|
+| **decode-heavy** | `greenfield · small context` | `0.5 in : 1 out` — a chat-shaped turn, small prompt and long answer, ~14 s of run |
+| **prefill-heavy** | `long-log · context blowout` | `9.8 in : 1 out` — a wall of context re-read every turn to produce a paragraph, ~3 m |
+
+Both are *measured* when the panel opens, at whatever the sliders say, the same way the picker
+measures its rows — the card quotes the run you would get, not a profile it was authored against.
+Choosing one loads that scenario **and starts it**: the page opens parked because it should not
+start by itself, not because pressing a button should do nothing. The rest of the corpus is one
+click further, in the picker. It stays down when a link carries `?intro=0` or the page is told to
+`autoplay`, and nothing about it is stored: the page is a file you open from disk, which is an
+opaque origin a browser may refuse storage to, and a guide you cannot get back to is worse than one
+you see twice.
+
+### The run
+
 Under the header, one rectangle says what the engine is doing right now. It names the phase,
 takes that phase's colour — heading, a stripe down its left edge, and a wash that fills as the
 phase itself progresses — and carries the numbers for it: `prefill · req #4 · 5.9k / 12k tok
@@ -151,10 +181,21 @@ compare one prefill against the next without trying to hit the edge of a band wi
 seek bar itself still scrubs freely by click or drag.
 
 `space` play/pause · `R` restart · `←` `→` seek one second (`shift` for five) ·
-`1`–`7` playback speed · `P` toggle settings.
+`1`–`7` playback speed · `esc` close the panel in front. The transport keys are mute while a panel
+is up: a transport you cannot see is a transport you do not move. And `space` is the transport's
+however the caret got where it is — a click leaves it on the button that was clicked, and a closing
+panel hands it back to the button the panel was opened from — so a button that answered space would
+replay the last click: dismiss the guide, press space, and the guide comes back instead of the run
+starting. The button gives the caret up when it takes the key, so one press is one action, while
+`enter` stays the focused control's own key and, inside a panel, so does space — which is how the ✕
+and the session rows are worked.
+
+A panel closes from its own controls — the ✕ in the corner, a click on the backdrop behind it, or
+`esc` — and `esc` takes the panel on top and only that one, so escaping the session list leaves the
+guide behind it where it was. The lock on the page holds until the last one leaves.
 
 Below 900px the settings card stack stops being a sidebar and becomes a second view: the
-**settings** button or `P` swaps the session and the panel for each other, and whichever is up
+**settings** button swaps the session and the panel for each other, and whichever is up
 takes the whole space under the phase bar. Stacked, the summary started a screen below the bar
 with the boot step still peeking over it and neither half was tall enough to read. On a narrow
 window the session gets that space when the page loads, so opening settings is your move, not
@@ -292,6 +333,7 @@ own duration.
 | `curve`               | `flat`, `gentle`, `steep`, `cliff`, or `ctx:mult` points such as `0:100,32000:60` |
 | `speed`               | playback speed `0.25`–`16`                           |
 | `autoplay`            | `1` to play on load — parked at zero by default, and switching scenario always pauses   |
+| `intro`               | `1` (default) to open the guide on load, `0` to leave it down — `autoplay=1` also leaves it down |
 | `theme`               | `dark`, `light` — defaults to your OS preference unless set      |
 
 ```
@@ -306,8 +348,29 @@ is 100k.
 ## Tests
 
 `tools/selftest.mjs` runs the page script in node against a small DOM shim, sweeping the
-timeline and firing the transport, keyboard, settings, curve editor, and seek handlers. It
-also checks the seek bar's bands: they tile the duration with nothing doubled or missed, each
+timeline and firing the transport, keyboard, settings, curve editor, and seek handlers. It boots
+the guide first, because that is what the page shows first: it must open on load and stay down when
+`intro=0` or `autoplay` says to, offer exactly the two shapes it claims (the decode-heavy card has
+to be dominated by generating and the prefill-heavy one by reading, measured on the corpus, or the
+label over the card is a lie the card still tells), quote numbers that move when the sliders move,
+load and start the scenario it names, mute the transport while it is up, and answer every single key
+it advertises — documentation is the first thing to outlive the code it describes, so the rows of its
+shortcut list are read back out of the markup and each one held to the handler that answers it; a key
+that leaves the code cannot stay in the guide. The two panels are dismissed with the keyboard on top
+of that: `esc` has to close the one in front and leave the one behind, hold the lock until the last
+panel is down, stay mute over a run it must not start, and do nothing at all when there is no panel
+to go back from. Neither key is decided by what the reader clicked last: space has to work the
+transport with the caret sitting on the button they last pressed, hand that button's focus back so
+the browser's own activation does not click it a second time, and still leave `enter` — and space
+behind a dialog — to the control under the caret. Reading the caret at all needs a shim that knows
+what it is sitting on, so it reflects the markup's start tags now, element names and `hidden`
+alike: without the names `#panelToggle` answers as the div the shim invents for every id rather than
+the button the page has, and without `hidden` every closed panel reads as open, so a page properly
+locked behind a dialog looks like a dead keyboard. The same reading holds its list of engine options
+to the settings fields that change them, their order to the rule that the panel's one choice stays
+above the prose you scroll to, and its four phase dots to the variables the bands are
+painted from. It also checks the seek bar's bands: they tile the duration with nothing doubled or
+missed, each
 band's phase is the one `phaseAt` reports at its midpoint, and every band phase has a colour
 in both themes — so the bar cannot drift from the phase bar or go invisible on one palette. That
 bar is read back at the centre of every band too: whatever colour the timeline is painted, the

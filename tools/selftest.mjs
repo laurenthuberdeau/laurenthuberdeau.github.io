@@ -50,7 +50,10 @@ class El {
   set className(v) { this._cls = new Set(String(v).split(/\s+/).filter(Boolean)); }
   descendants() { const out = []; const walk = (n) => n.children.forEach((c) => { out.push(c); walk(c); }); walk(this); return out; }
   dispatch(type, ev = {}) {
-    const e = { type, target: this, clientX: 0, clientY: 0, preventDefault() {}, ...ev };
+    /* a real event carries both of these whatever it is, and a handler that stops propagation
+       (the modal stack does, so one Esc closes one panel) is not a handler the harness gets to
+       run into a TypeError — guard() would swallow that and the panel would simply never close */
+    const e = { type, target: this, clientX: 0, clientY: 0, preventDefault() {}, stopPropagation() {}, ...ev };
     if (!e.target) e.target = this;
     (this._ls[type] || []).forEach((fn) => guard(type + ' on ' + this.tagName + (this.id ? '#' + this.id : ''), () => fn(e)));
   }
@@ -66,6 +69,21 @@ const docListeners = {};
    instead of silently synthesizing an element a real browser would never have. */
 const QSA = new Map();
 const MARKUP_IDS = new Set((html.match(/\bid="([^"]+)"/g) || []).map((m) => m.slice(4, -1)));
+/* a modal's whole visible state is one attribute, and the shim parses no attributes: an element
+   synthesized for `#scenarioPicker` would report `hidden === undefined`, so every closed panel
+   read as open — which makes the keys that are supposed to be mute behind a dialog look live, and
+   a stack of two panels collapse into one. So carry the start tags' `hidden` over to the nodes the
+   shim hands out for those ids, the same way a browser reflects the attribute. */
+const MARKUP_HIDDEN = new Set((html.match(/<[a-z][^>]*>/gi) || [])
+  .filter((tag) => /[\s/]hidden(?=[\s/>])/.test(tag) && /\bid="([^"]+)"/.test(tag))
+  .map((tag) => tag.match(/\bid="([^"]+)"/)[1]));
+/* the same drift for the element itself: the shim hands out a div for every id, so a handler that
+   asks what the caret landed on — the transport keys do, since space means one thing on a button
+   and another in a field — reads a page that has no buttons in it at all. Reflect the start tag's
+   element name the way `hidden` is reflected above. */
+const MARKUP_TAG = new Map((html.match(/<[a-z][^>]*>/gi) || [])
+  .filter((tag) => /\bid="([^"]+)"/.test(tag))
+  .map((tag) => [tag.match(/\bid="([^"]+)"/)[1], tag.match(/^<([a-z0-9-]+)/i)[1]]));
 const document = {
   documentElement: new El('html'), body: new El('body'),
   createElement: (t) => new El(t), createElementNS: (ns, t) => new El(t),
@@ -84,7 +102,11 @@ const document = {
         return null;
       }
     }
-    const e = new El(sel === '#curveChart' || sel.indexOf('curveChart') >= 0 ? 'svg' : 'div'); cache.set(sel, e); return e;
+    const asId = /^#[\w-]+$/.test(sel) ? sel.slice(1) : null;
+    const e = new El((asId && MARKUP_TAG.get(asId)) ||
+      (sel === '#curveChart' || sel.indexOf('curveChart') >= 0 ? 'svg' : 'div'));
+    if (asId && MARKUP_HIDDEN.has(asId)) e.hidden = true;
+    cache.set(sel, e); return e;
   },
   /* attribute-selector lookups are memoized so the page and a test re-querying the same
      selector get the SAME nodes. Without that, listeners the page attaches at load land on
@@ -100,7 +122,7 @@ const document = {
     return made;
   },
 };
-const fireDoc = (type, ev) => (docListeners[type] || []).forEach((fn) => guard('doc ' + type, () => fn({ type, target: { tagName: 'BODY' }, preventDefault() {}, ...ev })));
+const fireDoc = (type, ev) => (docListeners[type] || []).forEach((fn) => guard('doc ' + type, () => fn({ type, target: { tagName: 'BODY' }, preventDefault() {}, stopPropagation() {}, ...ev })));
 
 let raf = 0, frames = [];
 const perf = { now: () => Number(process.hrtime.bigint()) / 1e6 };
@@ -152,6 +174,262 @@ ok('autoplay starts playback on load', AS.config.autoplay
 const DEFAULTS_SRC = (src.match(/const DEFAULTS = \{[\s\S]*?\n\};/) || [''])[0];
 ok('the page loads parked by default', /autoplay:\s*0\b/.test(DEFAULTS_SRC),
    (DEFAULTS_SRC.match(/autoplay:[^,\n]*/) || ['autoplay missing from DEFAULTS'])[0]);
+
+/* --- the guide ---
+   The page opens on it, so everything below has to step past it first: while a dialog is up the
+   transport keys are mute, which is the point of a dialog and would otherwise read as a dead
+   keyboard for the rest of this run. Read it, check what it promises, then close it. */
+const GUIDE_UP = !$('#introModal').hidden && !$('#introBackdrop').hidden;
+ok('the guide opens on load, and stays down when told not to',
+   GUIDE_UP === !!(AS.config.intro && !AS.config.autoplay),
+   'open=' + GUIDE_UP + ' · intro=' + AS.config.intro + ' · autoplay=' + AS.config.autoplay);
+/* When it kept out of the way there is still a panel to read — the `?` in the header opens it — so
+   open it here and check what is in it from there: the boot policy above is what a `?intro=0` or an
+   autoplay run is about, and it should not change what the rest of this section can see. A modal
+   that dims the page but does not hold it is half a modal: the page behind would still scroll, and
+   the reader would move the thing they are not looking at. */
+if (!GUIDE_UP) { AS.openIntro(); pump(); }
+ok('the guide locks the page behind it', document.documentElement.classList.contains('modal-open'),
+   'html.modal-open on the root while it is up');
+/* re-read each time: in a browser `children` is a live collection, and the guide rebuilds its
+   cards on every open, so a snapshot taken once would empty itself under the next check */
+const SHAPES = () => AS.introShapes();
+ok('the guide offers the two shapes', SHAPES().length === 2 &&
+   /decode-heavy/.test(SHAPES()[0].textContent) && /prefill-heavy/.test(SHAPES()[1].textContent),
+   SHAPES().map((b) => b.textContent.replace(/\s+/g, ' ').trim().slice(0, 46)).join(' | '));
+/* the cards are buttons, so they come with Enter, Space and a focus ring rather than a click
+   handler on a div that only the mouse knows about */
+ok('a shape is a button, not a clickable div', SHAPES().every((b) => b.tagName === 'BUTTON' && b.type === 'button'),
+   SHAPES().map((b) => b.tagName + '[' + b.type + ']').join(' '));
+/* the claim in the card is a claim about the corpus: the decode-heavy one has to be dominated by
+   generating and the prefill-heavy one by reading, at the shipped profile. If the corpus drifts the
+   label over the card is wrong while the card still works, which is the drift nobody notices. */
+const shapeRatio = (id) => { const s = AS.scenarioStats(id); return s.in / Math.max(1e-9, s.out); };
+const SHAPE_IDS = ['greenfield', 'long-log'];
+const shapeSession = (i) => (AS.sessions.find((s) => s.id === SHAPE_IDS[i]) || {}).name || 'MISSING';
+const shapeText = (i) => (AS.introShapes()[i] || { textContent: '' }).textContent;
+const rDecode = shapeRatio(SHAPE_IDS[0]), rPrefill = shapeRatio(SHAPE_IDS[1]);
+ok('the two shapes are the two ends of the corpus',
+   SHAPE_IDS.every((id, i) => shapeText(i).indexOf(shapeSession(i)) !== -1) &&
+   rDecode < 1 && rPrefill > 2 && rPrefill > rDecode * 4,
+   'decode-heavy ' + rDecode.toFixed(2) + ' in : 1 out · prefill-heavy ' + rPrefill.toFixed(1) + ' in : 1 out');
+/* the numbers on the cards are measured rather than written down, so moving a slider has to move
+   them: the same promise the picker makes, and the one an explainer is most likely to break by
+   quoting a profile it was authored against */
+$('#introClose').dispatch('click'); pump();
+const CARD_BEFORE = shapeText(0);
+const DECODE_FIELD = $('#decode'), DECODE_WAS = DECODE_FIELD.value;
+DECODE_FIELD.value = String(Math.max(1, Math.round(Number(DECODE_WAS) / 2)));
+DECODE_FIELD.dispatch('input'); pump();
+AS.openIntro(); pump();
+const CARD_AFTER = shapeText(0);
+DECODE_FIELD.value = DECODE_WAS;
+DECODE_FIELD.dispatch('input'); pump();
+ok('the shapes measure themselves at the current settings', CARD_AFTER !== CARD_BEFORE,
+   'halving decode moved the card from “' + (CARD_BEFORE.match(/[^·]*·[^·]*$/) || ['?'])[0].trim() +
+   '” to “' + (CARD_AFTER.match(/[^·]*·[^·]*$/) || ['?'])[0].trim() + '”');
+/* …and the keys are mute behind it: a transport you cannot see is a transport you do not move */
+AS.pause(); AS.seek(0); pump();
+const KEY = (ev) => { fireDoc('keydown', ev); pump(); };
+KEY({ code: 'Space', key: ' ' });
+ok('the transport is mute while the guide is up', !AS.playing && AS.vTime === 0,
+   'playing=' + AS.playing + ' vTime=' + AS.vTime);
+$('#introClose').dispatch('click'); pump();
+ok('the guide closes', $('#introModal').hidden && $('#introBackdrop').hidden &&
+   !document.documentElement.classList.contains('modal-open'),
+   'hidden and the page unlocked');
+/* the `?` in the header is now the only way back into the guide, so it has to work in both
+   directions and leave the page unlocked when it closes it */
+$('#introBtn').dispatch('click'); pump();
+const OPENED_BY_BTN = !$('#introModal').hidden && !$('#introBackdrop').hidden
+  && document.documentElement.classList.contains('modal-open');
+$('#introBtn').dispatch('click'); pump();
+ok('the header ? opens the guide and closes it again', OPENED_BY_BTN &&
+   $('#introModal').hidden && $('#introBackdrop').hidden &&
+   !document.documentElement.classList.contains('modal-open'),
+   'opened=' + OPENED_BY_BTN + ' · closed and unlocked');
+/* the keys are documentation, and documentation is the first thing to outlive the code it
+   describes: fire each one the guide advertises and check the page actually answers */
+const guideKeys = [];
+KEY({ code: 'Space', key: ' ' });
+if (!AS.playing) guideKeys.push('space did not play');
+AS.pause(); AS.seek(AS.tl.duration / 2);
+KEY({ key: 'r' });
+/* restart plays, and pump() lets the frame it scheduled run once, so the clock is a hair off
+   zero by the time the check reads it — what restart promises is that the run is back at the top */
+if (AS.vTime > 1e-3 || !AS.playing) guideKeys.push('r did not restart (vTime=' + AS.vTime + ' playing=' + AS.playing + ')');
+AS.pause();
+AS.seek(10);
+KEY({ key: 'ArrowRight' });
+if (Math.abs(AS.vTime - 11) > 1e-3) guideKeys.push('→ did not seek one second (at ' + AS.vTime.toFixed(3) + ')');
+KEY({ key: 'ArrowLeft', shiftKey: true });
+if (Math.abs(AS.vTime - 6) > 1e-3) guideKeys.push('shift-← did not seek five (at ' + AS.vTime.toFixed(3) + ')');
+KEY({ key: '1' });
+if (AS.config.speed !== 0.25) guideKeys.push('1 did not set the slowest speed');
+KEY({ key: '7' });
+if (AS.config.speed !== 16) guideKeys.push('7 did not set the fastest speed');
+KEY({ key: '3' });                                    /* back to 1× for the rest of this run */
+ok('every key the guide lists answers', !guideKeys.length, guideKeys.join(' | ') ||
+   'space r ← → 1…7 all handled');
+/* the caret does not get to veto the transport. A click leaves it on the button that was clicked
+   and a panel hands it back to the button it opened from, so a focused button that answered space
+   would replay the last click — dismiss the guide, press space, and the guide comes back */
+const CARET = $('#panelToggle');
+AS.pause(); AS.seek(0); pump();
+CARET.blurred = false;
+KEY({ code: 'Space', key: ' ', target: CARET });
+ok('space works the transport with the caret on a button',
+   AS.playing && CARET.blurred === true,
+   'playing=' + AS.playing + ' · caret given up=' + CARET.blurred);
+/* Enter is still the control's own key, so the keyboard can work that same button */
+AS.pause(); pump();
+CARET.blurred = false;
+KEY({ key: 'Enter', target: CARET });
+ok('enter is left to the focused button', CARET.blurred === false && !AS.playing,
+   'caret kept=' + (CARET.blurred === false) + ' playing=' + AS.playing);
+/* and inside a dialog space belongs to the control under the caret, which is how its ✕ is worked */
+AS.openIntro(); pump();
+const CLOSE = $('#introClose');
+CLOSE.blurred = false;
+KEY({ code: 'Space', key: ' ', target: CLOSE });
+ok('inside a dialog space stays with the focused control',
+   CLOSE.blurred === false && !AS.playing, 'caret kept=' + (CLOSE.blurred === false) +
+   ' playing=' + AS.playing);
+AS.closeIntro(); pump();
+/* the sweep above fires a list this test writes. This one reads the list the *page* writes — out of
+   the markup, since the shim builds no faithful tree for a modal — and holds each row to the source
+   that answers it, because the shortcut list is the documentation most prone to outliving its code:
+   the key comes out of the handler and the guide goes on promising it. What it cannot catch is the
+   other direction, a key that answers with no row to tell anyone — that one is caught only by a
+   reader who already knows the key. */
+const flatRow = (s) => s.replace(/\s+/g, '').toLowerCase();
+const GUIDE_MARKUP = html.slice(html.indexOf('id="introModal"'), html.indexOf('id="scenarioPicker"'));
+/* one reader for the guide's own lists: the shim builds no faithful tree for a modal, so the rows are
+   taken from the markup they are written in */
+const guideList = (cls) => ((GUIDE_MARKUP.match(new RegExp('<ul class="' + cls + '">([\\s\\S]*?)</ul>')) || [, ''])[1]
+  .match(/<li[^>]*>([\s\S]*?)<\/li>/g) || []).map((li) =>
+    li.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim());
+const ROW_EVIDENCE = [
+  [flatRow('space'), () => /e\.code === 'Space'/.test(src)],
+  [flatRow('R'), () => /e\.key === 'r' \|\| e\.key === 'R'/.test(src)],
+  [flatRow('← →'), () => /e\.key === 'ArrowRight'/.test(src) && /e\.key === 'ArrowLeft'/.test(src)],
+  [flatRow('1 – 7'), () => /\^\[1-9\]\$/.test(src)],
+  [flatRow('esc'), () => /e\.key === 'Escape'/.test(src)],
+];
+const GUIDE_ROWS = (GUIDE_MARKUP.match(/<dt[^>]*>([\s\S]*?)<\/dt>/g) || [])
+  .map((tag) => tag.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim());
+const STALE_ROWS = GUIDE_ROWS.filter((l) =>
+  !ROW_EVIDENCE.some(([row, answered]) => row === flatRow(l) && answered()));
+ok('every shortcut the guide lists still answers',
+   GUIDE_ROWS.length === ROW_EVIDENCE.length && !STALE_ROWS.length,
+   GUIDE_ROWS.join(' · ') + (STALE_ROWS.length ? ' → nothing handles ' + STALE_ROWS.join(', ')
+     : ' · every row has a handler in the source'));
+/* the guide describes the engine in prose, and prose is cheaper to edit than a control, so the two
+   drift: a sentence gains a dial the panel never got. Every option row is therefore held to the field
+   that would change it — the wording is free to differ, the destination is not, and a row that names
+   a setting nobody can reach is a promise the panel cannot keep. */
+const OPTION_EVIDENCE = [
+  ['prefill speed', () => /id="prefill"/.test(html) && /id="prefillRange"/.test(html)],
+  ['decode speed', () => /id="decode"/.test(html) && /id="decodeRange"/.test(html)],
+  ['prompt caching', () => /id="cache"/.test(html)],
+  ['request latency', () => /id="latency"/.test(html)],
+  ['throughput decay curve', () => /id="curveTable"/.test(html)],
+];
+const GUIDE_OPTIONS = guideList('specs');
+const DEAD_OPTIONS = GUIDE_OPTIONS.filter((o) =>
+  !OPTION_EVIDENCE.some(([name, built]) => flatRow(o).startsWith(flatRow(name)) && built()));
+ok('every option the guide lists has a control in the panel',
+   GUIDE_OPTIONS.length === OPTION_EVIDENCE.length && !DEAD_OPTIONS.length,
+   GUIDE_OPTIONS.map((o) => o.split(' — ')[0]).join(' · ') + (DEAD_OPTIONS.length
+     ? ' → nothing to change ' + DEAD_OPTIONS.map((o) => o.split(' — ')[0]).join(', ')
+     : ' · every one has a field'));
+/* the body scrolls, and a scroll hides controls before it hides prose: the two shapes are the one
+   thing the reader is asked to choose, so they come before the option list and the shortcut list,
+   and what falls below them is definitions rather than a button nobody thought to look for. The
+   order is asserted, not the pixels — a reorder cannot then quietly bury the choice under a
+   glossary, and the picker stays the last thing put in front of the reader */
+const GUIDE_ORDER = ['class="steps"', 'id="introShapes"', 'class="specs"', 'class="keys"']
+  .map((needle) => GUIDE_MARKUP.indexOf(needle));
+ok('the guide puts the two shapes before the prose you scroll to',
+   GUIDE_ORDER.every((at) => at >= 0) && GUIDE_ORDER.every((at, i) => !i || at > GUIDE_ORDER[i - 1]),
+   ['how to use', 'shapes', 'options', 'shortcuts'].map((n, i) => n + '@' + GUIDE_ORDER[i]).join(' → '));
+/* and the phases the guide names are the phases the bar draws, each with the dot it will be read in
+   below — the guide teaches the bar's encoding rather than inventing a second vocabulary for it */
+const PHASE_DOT = { queue: 'q', prefill: 'p', decode: 'd', tool: 't' };
+const GUIDE_PHASES = [...GUIDE_MARKUP.matchAll(/<i class="dot (\w)"[^>]*><\/i><span><b>([^<]+)<\/b>/g)]
+  .map((m) => [m[1], m[2].trim().toLowerCase()]);
+const PHASE_NAMED = (ph) => GUIDE_PHASES.some(([dot, name]) =>
+  dot === PHASE_DOT[ph] && name === (ph === 'tool' ? 'tool exec' : ph));
+ok('the guide names the four phases the bar draws, each on its own dot',
+   GUIDE_PHASES.length === 4 && Object.keys(PHASE_DOT).every(PHASE_NAMED),
+   GUIDE_PHASES.map(([dot, name]) => '.' + dot + ' ' + name).join(' · '));
+/* both panels up at once — the stacked case, which the lock and the muted keys are for */
+AS.openIntro(); pump(); AS.openPicker(); pump();
+/* and the keys belong to whichever panel is up, not to the page behind it — mute in front of the
+   session list exactly as it is in front of the guide */
+AS.pause(); AS.seek(0); pump();
+KEY({ code: 'Space', key: ' ' });
+ok('the transport is mute behind the picker too', !AS.playing && AS.vTime === 0,
+   'playing=' + AS.playing + ' vTime=' + AS.vTime);
+/* `esc` answers the panel on top and takes only that one: the session list leaves, the guide behind
+   it stays, and the shared lock stays with the guide. One press per panel is what makes the key read
+   as "back" rather than as "clear everything I never asked about" */
+KEY({ key: 'Escape' });
+ok('esc closes the panel in front and leaves the one behind it',
+   $('#scenarioPicker').hidden && !$('#introModal').hidden &&
+   document.documentElement.classList.contains('modal-open'),
+   'picker=' + $('#scenarioPicker').hidden + ' guide=' + $('#introModal').hidden +
+   ' lock=' + document.documentElement.classList.contains('modal-open'));
+/* dismissing a dialog is not also a transport command: the run behind stays where it was */
+ok('esc leaves the run parked', !AS.playing && AS.vTime === 0,
+   'playing=' + AS.playing + ' vTime=' + AS.vTime);
+KEY({ key: 'Escape' });
+ok('a second esc closes the guide and unlocks the page',
+   $('#introModal').hidden && $('#introBackdrop').hidden &&
+   !document.documentElement.classList.contains('modal-open'),
+   'guide=' + $('#introModal').hidden +
+   ' lock=' + document.documentElement.classList.contains('modal-open'));
+/* with nothing up the key has nothing to go back from, so it stays inert rather than becoming a
+   transport key nobody advertised */
+KEY({ key: 'Escape' });
+ok('esc with no panel up does nothing', !AS.playing && AS.vTime === 0,
+   'playing=' + AS.playing + ' vTime=' + AS.vTime);
+/* the same two closes from the pointer: leaving the session list with the guide behind it returns
+   to the guide rather than clearing both at once, and the shared lock holds until the last panel
+   leaves */
+AS.openIntro(); pump(); AS.openPicker(); pump();
+$('#pickClose').dispatch('click'); pump();
+ok('the session list closes from its own button and leaves the guide up',
+   $('#scenarioPicker').hidden && !$('#introModal').hidden
+   && document.documentElement.classList.contains('modal-open'),
+   'picker=' + $('#scenarioPicker').hidden + ' guide=' + $('#introModal').hidden);
+$('#introBackdrop').dispatch('click'); pump();
+ok('the guide closes from the backdrop',
+   $('#introModal').hidden && $('#introBackdrop').hidden, 'hidden and dim removed');
+ok('the page is unlocked once both panels are down',
+   !document.documentElement.classList.contains('modal-open'),
+   'the lock is shared, so it is held until the last panel leaves');
+/* choosing a shape is the ask, so it loads that session and starts it — the page opens parked
+   because it should not start by itself, not because pressing a button does nothing */
+const shapePicks = [];
+AS.openIntro(); pump();
+AS.introShapes()[1].dispatch('click'); pump();
+if (AS.config.session !== SHAPE_IDS[1]) shapePicks.push('loaded ' + AS.config.session);
+if (!AS.playing) shapePicks.push('did not start the run');
+if (AS.vTime > 1e-3) shapePicks.push('started at ' + AS.vTime);
+if (!$('#introModal').hidden) shapePicks.push('guide still up');
+if ($('#pickSession').textContent.indexOf(shapeSession(1)) === -1)
+   shapePicks.push('header still says ' + $('#pickSession').textContent);
+AS.pause(); AS.seek(0); pump();
+ok('choosing a shape loads it and runs it', !shapePicks.length, shapePicks.join(' | ') ||
+   SHAPE_IDS[1] + ' loaded and playing, guide down, header updated');
+/* the picker path is unchanged: it chooses without starting, so the page stays parked — and with
+   no guide behind it, esc still has exactly one panel to give back */
+AS.openPicker(); pump();
+KEY({ key: 'Escape' });
+ok('esc closes the session list on its own and leaves the run parked',
+   $('#scenarioPicker').hidden && !AS.playing && AS.vTime === 0,
+   'picker=' + $('#scenarioPicker').hidden + ' playing=' + AS.playing + ' vTime=' + AS.vTime);
 
 /* --- playback sweep ---
    the phase bar is the only place the run says what it is doing, so sample it as the
@@ -608,6 +886,33 @@ ok('every phase-bar state has a colour and a heading',
      (barRule(st).match(/var\((--[\w-]+)\)/) || [, '?'])[1]).join(' '));
 ok('every band phase has a colour', BANDS.every((ph) => /background:\s*var\(--[\w-]+\)/.test(bandRule(ph))),
    BANDS.map((ph) => ph + '=' + (bandRule(ph).match(/var\((--[\w-]+)\)/) || [, '?'])[1]).join(' '));
+/* the guide's legend is the bar's encoding, so both have to read one variable: a dot that drifts to
+   another colour teaches a vocabulary the session itself never uses */
+const dotVar = (ph) => (STYLE.match(new RegExp('\\.dot\\.' + PHASE_DOT[ph] + ' \\{[^}]*var\\((--[\\w-]+)\\)')) || [, ''])[1];
+ok("the guide's phase dots read the band colours", Object.keys(PHASE_DOT).every((ph) =>
+   dotVar(ph) && dotVar(ph) === (bandRule(ph).match(/var\((--[\w-]+)\)/) || [, ''])[1]),
+   Object.keys(PHASE_DOT).map((ph) => ph + ' dot ' + (dotVar(ph) || '?') + ' = band ' +
+     (bandRule(ph).match(/var\((--[\w-]+)\)/) || [, '?'])[1]).join(' · '));
+/* one line per row is a promise the layout makes, and this harness has no layout — so the width the
+   panel actually offers is read out of the CSS that draws it and turned into a character budget: a
+   monospace cell is 0.6em, the panel is a fixed width minus its border and the body's padding, and a
+   list spends its bullet column. Deliberately coarse — it is here to catch a row creeping back over
+   the line, not the last half character, and a narrower window wraps everything anyway. */
+const cssNum = (re, at = 1) => parseFloat((STYLE.match(re) || [, '0'])[at]) || 0;
+const GUIDE_CHAR_PX = cssNum(/body \{[^}]*font-size: (\d+)px/) * 0.6;
+const guideBudget = (reserve) => Math.floor((
+  cssNum(/\.introModal \{[^}]*width: min\((\d+)px/) -
+  2 * cssNum(/\.introModal \{[^}]*border: (\d+)px/) -
+  2 * cssNum(/\.introBody \{[^}]*padding: ([\d.]+)px ([\d.]+)px ([\d.]+)px/, 2) - reserve) / GUIDE_CHAR_PX);
+const GUIDE_LINES = guideList('specs').map((r) => [guideBudget(18), r])
+  .concat(guideList('legend').map((r) => [guideBudget(18 + 9 + 9), r]));   /* .legend spends a dot and a gap */
+const OVER_ROWS = GUIDE_LINES.filter(([room, r]) => r.length > room)
+  .map(([room, r]) => r.length + ' chars > ' + room + ': ' + r.split(' — ')[0]);
+ok('every guide row fits the line the panel gives it', !OVER_ROWS.length,
+   'budget ' + guideBudget(18) + ' chars for the options and ' + guideBudget(36) +
+   ' for the phases, at ' + GUIDE_CHAR_PX.toFixed(1) + 'px per character · tightest row has ' +
+   Math.min(...GUIDE_LINES.map(([room, r]) => room - r.length)) + ' characters to spare' +
+   (OVER_ROWS.length ? ' → ' + OVER_ROWS.join(' | ') : ''));
 ok('both themes carry the whole phase palette', palettes.every((p) => [...PHASE_VARS, '--accent', '--border-2']
    .every((v) => p.includes(v + ':'))), palettes.map((p) => PHASE_VARS.map((v) => hexOf(p, v) || 'missing').join(' ')).join('  |  '));
 ok('phase colours stay distinguishable', palettes.every((p) => {
@@ -802,7 +1107,7 @@ fireDoc('keydown', { code: 'Space', key: ' ' }); pump();
 fireDoc('keydown', { code: 'Space', key: ' ' });
 fireDoc('keydown', { key: 'r' }); pump();
 fireDoc('keydown', { key: 'ArrowRight' }); fireDoc('keydown', { key: 'ArrowLeft', shiftKey: true });
-fireDoc('keydown', { key: 'p' }); fireDoc('keydown', { key: '3' });
+fireDoc('keydown', { key: '3' });
 fireDoc('keydown', { key: ' ', target: { tagName: 'INPUT' } });
 $('#prefill').value = '42000'; $('#prefill').dispatch('input');
 $('#decode').value = '77'; $('#decode').dispatch('input');
@@ -1134,7 +1439,7 @@ ok('the panel becomes a full view on narrow windows',
    would simply stop toggling in a browser and pass every test here. And on a narrow window
    it is decided before first paint, so opening the panel is never the page's first motion. */
 ok('the settings toggle is labelled and writes the class the CSS reads',
-   /id="panelToggle"[^>]*title="Toggle settings \(P\)"[^>]*>settings<\/button>/.test(html) &&
+   /id="panelToggle"[^>]*title="Toggle settings"[^>]*>settings<\/button>/.test(html) &&
      /id="panelToggle"[^>]*aria-expanded=/.test(html) &&
      /documentElement\.classList\.toggle\('no-panel'\)/.test(src) &&
      !/body\.classList\.toggle\('no-panel'\)/.test(src) &&
@@ -1145,7 +1450,7 @@ ok('the settings toggle is labelled and writes the class the CSS reads',
       affordance; the class must be written where the rule reads it, because the shim applies
       no CSS and a <body> toggle against an <html> rule would pass every test here while the
       button did nothing in a browser. On a narrow window the head script starts it closed. */
-   'says settings, toggles (P), root class, closed before paint on narrow windows');
+   'says settings, writes the root class, closed before paint on narrow windows');
 const DL = $('#summary');
 /* the UI probes above leave whatever state they last tested: another corpus, the cache
    flipped, the rates dragged to whatever the curve battery needed. Restore the whole URL

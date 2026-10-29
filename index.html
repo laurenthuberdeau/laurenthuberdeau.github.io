@@ -321,9 +321,81 @@
     .panel { width: 100%; flex: 1 1 auto; min-height: 0; border-left: none; }
     html:not(.no-panel) .transcript { display: none; }
     .pickerModal { width: calc(100vw - 16px); height: calc(100vh - 16px); border-radius: 6px; }
+    .introModal { width: calc(100vw - 16px); height: calc(100vh - 16px); border-radius: 6px; }
     .pickHead { flex-wrap: wrap; }
     .pickSub { text-align: left; flex: 1 0 100%; order: 3; }
     .pickList { grid-template-columns: 1fr; }
+  }
+
+  /* ---- the guide pop-up ----
+     The picker's machinery again, deliberately: a backdrop, one centred card, a fixed header over
+     a body that scrolls itself. An explainer read before the run and a session chosen before the
+     run are the same kind of thing — a decision, not a panel you skim beside the work — so they
+     are built the same way and out of the same variables, and neither needs learning twice. */
+  .introModal {
+    position: fixed; inset: 0; margin: auto;
+    width: min(900px, calc(100vw - 32px)); height: min(660px, calc(100vh - 48px));
+    z-index: 50; background: var(--panel); border: 1px solid var(--border-2);
+    border-radius: 10px; display: flex; flex-direction: column;
+    box-shadow: 0 18px 60px rgba(0, 0, 0, .45);
+  }
+  .introModal[hidden] { display: none; }
+  .introBody { flex: 1 1 auto; overflow-y: auto; padding: 12px 18px 18px; }
+  /* the prose runs the full width of the panel: a measure cap here reads as a column that stopped
+     early, with the right-hand third of the card empty and every paragraph breaking twice */
+  .introBody p { margin: 0 0 9px; color: var(--fg-dim); }
+  .introBody b { color: var(--fg); font-weight: 600; }
+  .introBody h3 {
+    font-size: 10px; letter-spacing: 1.4px; text-transform: uppercase; color: var(--fg-dim);
+    margin: 18px 0 7px; font-weight: 600;
+  }
+  /* the four phases, in the colours the whole page already uses for them: the legend and the bands
+     under it are one encoding, so the guide teaches the bar rather than a second vocabulary */
+  .legend { list-style: none; margin: 0 0 10px; padding: 0; display: grid; gap: 4px; }
+  .legend li { display: flex; gap: 9px; align-items: baseline; color: var(--fg-dim); }
+  .legend .dot { flex: 0 0 auto; width: 9px; height: 9px; border-radius: 2px; }
+  .dot.q { background: var(--queue); } .dot.p { background: var(--prefill); }
+  .dot.d { background: var(--decode); } .dot.t { background: var(--tool); }
+  /* the walk-through and the settings list are one shape — a name in the page's own colour over the
+     sentence that explains it — so they share a rule rather than two that happen to agree. The bottom
+     margin is for the paragraph that follows the walk-through; where a heading follows the settings
+     list instead, its larger top margin swallows this one, as adjacent margins do. */
+  .steps, .specs {
+    margin: 0 0 9px; padding-left: 18px; display: grid; gap: 5px; color: var(--fg-dim);
+  }
+  .keys { display: grid; grid-template-columns: max-content 1fr; gap: 3px 14px; margin: 0; }
+  .keys dt { color: var(--fg); white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .keys dd { margin: 0; color: var(--fg-dim); }
+  /* the two shapes are buttons, not cards with a click handler on them: choosing one is the one
+     action the guide has, so it gets the focus ring, Enter and Space for nothing */
+  .introShapes { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .shape {
+    display: flex; flex-direction: column; gap: 4px; text-align: left; cursor: pointer;
+    background: var(--bg-2); border: 1px solid var(--border); border-radius: 8px;
+    padding: 10px 12px; font-family: var(--mono); font-size: 11px; color: var(--fg-dim);
+  }
+  /* the page tints a hovered button right through to its text, which on a card would paint the
+     whole paragraph accent; only the verb at the bottom takes the colour */
+  .shape:hover { color: var(--fg-dim); border-color: var(--fg-dim); }
+  .shape:hover .shapeGo { color: var(--accent); }
+  .shapeKicker { color: var(--fg-dimmer); font-size: 9px; letter-spacing: 1.4px; text-transform: uppercase; }
+  .shapeName { color: var(--fg); font-size: 13px; font-weight: 700; }
+  .shapeCopy { line-height: 1.45; }
+  .shapeStats { color: var(--fg-dim); font-variant-numeric: tabular-nums; font-size: 10px; }
+  .shapeGo { margin-top: 2px; color: var(--fg-dimmer); letter-spacing: .6px; }
+  .introFoot {
+    flex: 0 0 auto; display: flex; align-items: center; gap: 12px;
+    padding: 10px 18px; border-top: 1px solid var(--border); font-size: 11px; color: var(--fg-dimmer);
+  }
+  /* one action, held to the bottom by the footer rather than left at the end of the prose: the body
+     scrolls, and the way to the rest of the corpus should still be there when it does */
+  #introBrowse { margin-left: auto; }
+  @media (max-width: 700px) {
+    /* two shapes side by side need about 600px to keep their prose readable; below that the
+       comparison is better read one under the other than as two columns of narrow type */
+    .introShapes { grid-template-columns: 1fr; }
+    .keys { grid-template-columns: 1fr; gap: 0; }
+    .keys dt { margin-top: 6px; }
   }
 </style>
 <script>
@@ -338,9 +410,9 @@
   window.AS_THEME = t;
   document.documentElement.dataset.theme = t;
   /* On a narrow window the panel is a whole view rather than a sidebar, so the two cannot be
-     up together. The session is the thing worth seeing, so it gets the space on load and
-     `panel` / `P` swaps between them. Decided here, before paint, for the same reason the
-     theme is: opening the panel should not be the page's first motion. */
+     up together. The session is the thing worth seeing, so it gets the space on load and the
+     **settings** button in the header swaps between them. Decided here, before paint, for the same
+     reason the theme is: opening the panel should not be the page's first motion. */
   if (window.matchMedia && window.matchMedia('(max-width: 900px)').matches)
     document.documentElement.classList.add('no-panel');
 })();
@@ -357,8 +429,9 @@
   <div class="seek" id="seek" role="slider" tabindex="0" aria-label="seek the run" aria-valuemin="0"><div class="track"></div><div class="played"></div><div class="head"></div></div>
   <div class="clock"><b id="tcur">0.00s</b> / <span id="tdur">0.00s</span></div>
   <div class="tail">
+    <button id="introBtn" title="What this is, and the shortcuts" aria-label="about this tool">?</button>
     <button id="theme" title="Toggle theme" aria-label="toggle theme">◐</button>
-    <button id="panelToggle" title="Toggle settings (P)" aria-expanded="false">settings</button>
+    <button id="panelToggle" title="Toggle settings" aria-expanded="false">settings</button>
   </div>
 </header>
 
@@ -421,6 +494,71 @@
 
   </aside>
 </main>
+
+<div class="backdrop" id="introBackdrop" hidden></div>
+<!-- the guide: what the tool is, the phases and settings it works from, and two sessions to start
+     with. Static prose in markup, because it is read rather than driven; the two cards under it are
+     the only part the script fills, because their numbers are measured at the settings in force. It
+     sits before the picker in the document so the picker, on the same z-index, stacks above it. -->
+<div class="introModal" id="introModal" role="dialog" aria-modal="true"
+     aria-labelledby="introTitle" tabindex="-1" hidden>
+  <header class="pickHead">
+    <h2 id="introTitle">Agentic Session Simulator</h2>
+    <button id="introClose" class="primary" title="Close (Esc)">✕ close</button>
+  </header>
+
+  <div class="introBody">
+    <p>Simulates a coding-agent session, showing how the inference engine spends its time and what it
+      is doing at every instant. Useful to understand how different performance parameters affect the
+      user experience.</p>
+
+    <p>A session is a sequence of turns, each turn being split in the following phases:</p>
+    <ul class="legend">
+      <li><i class="dot q"></i><span><b>queue</b> — the request waits on the engine to start processing it.</span></li>
+      <li><i class="dot p"></i><span><b>prefill</b> — the engine reads the prompt and any prior context, and prepares to generate an answer.</span></li>
+      <li><i class="dot d"></i><span><b>decode</b> — the engine writes the answer, and streams it back one token at a time.</span></li>
+      <li><i class="dot t"></i><span><b>tool exec</b> — the harness runs a command and waits for its completion.</span></li>
+    </ul>
+
+    <h3>How to use</h3>
+    <ul class="steps">
+      <li><b>▶ run</b> starts the session; <b>❚❚ pause</b> pauses the session.</li>
+      <li>The <b>header bar</b> displays a timeline of the whole run, with the current phase
+        highlighted.<br><b>Click</b> or <b>drag</b> it to skip to any point in the run.</li>
+      <li>The <b>phase bar</b> under the header displays the current phase and fills as that phase
+        runs.<br><b>Click</b> it to step to the next phase, <b>shift-click</b> to step to the one
+        before.</li>
+      <li>Play with the <b>settings</b> on the right to see how they affect the session metrics and
+        user experience.</li>
+    </ul>
+
+    <p>Pick a pre-recorded session to start:</p>
+    <div class="introShapes" id="introShapes"></div>
+
+    <h3>Inference engine options</h3>
+    <ul class="specs">
+      <li><b>prefill speed</b> — rate at which the engine can read the prompt and context.</li>
+      <li><b>decode speed</b> — rate at which the engine can generate and stream the answer.</li>
+      <li><b>prompt caching</b> — whether the engine re-reads the prompt and context every turn, or
+        reuses them.</li>
+      <li><b>request latency</b> — how long the request waits before the engine starts processing it.</li>
+      <li><b>throughput decay curve</b> — how the engine’s throughput decreases as the request size increases.</li>
+    </ul>
+
+    <h3>Shortcuts</h3>
+    <dl class="keys">
+      <dt>space</dt><dd>play / pause</dd>
+      <dt>R</dt><dd>restart from zero</dd>
+      <dt>← →</dt><dd>seek one second, <b>shift</b> five</dd>
+      <dt id="introSpeedKeys">1 – 7</dt><dd>playback speed, <span id="introSpeedRange">0.25× – 16×</span></dd>
+      <dt>esc</dt><dd>close the panel in front</dd>
+    </dl>
+  </div>
+
+  <footer class="introFoot">
+    <button id="introBrowse">browse all sessions →</button>
+  </footer>
+</div>
 
 <div class="backdrop" id="scenarioBackdrop" hidden></div>
 <div class="pickerModal" id="scenarioPicker" role="dialog" aria-modal="true"
@@ -900,7 +1038,10 @@ const DEFAULTS = {
   /* the page opens parked: the run is something you start rather than something that starts
      at you. `autoplay=1` is the opt-in for a page that plays itself, and a link copied from a
      page that was playing carries it, so a shared run still replays on its own */
-  speed: 1, curve: 'steep', autoplay: 0
+  speed: 1, curve: 'steep', autoplay: 0,
+  /* and it opens on the guide, which is the one place the page explains itself. `intro=0` is the
+     opt-out a link can carry, for a run sent to somebody who has already read it */
+  intro: 1
 };
 
 const Q = new URLSearchParams(location.search);
@@ -991,6 +1132,7 @@ const config = {
   cache:    qbool('cache', !!DEFAULTS.cache),
   speed:    readSpeed(),
   autoplay: qbool('autoplay', !!DEFAULTS.autoplay),
+  intro:    qbool('intro', !!DEFAULTS.intro),
   /* the head script resolves the theme before first paint; this is only a fallback */
   theme:    window.AS_THEME || 'dark',
   curve:    resolveCurve(Q.get('curve'))
@@ -2186,25 +2328,124 @@ function openPicker() {
   buildPicker();
   picker.hidden = false;
   backdrop.hidden = false;
-  document.documentElement.classList.add('modal-open');
+  syncModalLock();
   const cur = listEl.querySelector('[aria-selected="true"]') || listEl.firstElementChild;
   (cur || picker).focus();
 }
 function closePicker() {
   picker.hidden = true;
   backdrop.hidden = true;
-  document.documentElement.classList.remove('modal-open');
-  pickBtn.focus();
+  syncModalLock();
+  /* focus goes back where the picker was opened from, which is the guide when the reader came
+     from the guide — otherwise leaving the list drops the caret on a button behind a panel that
+     is still up */
+  if (intro.hidden) pickBtn.focus(); else introBrowse.focus();
 }
 
 pickBtn.addEventListener('click', () => (picker.hidden ? openPicker() : closePicker()));
 backdrop.addEventListener('click', closePicker);
 $('#pickClose').addEventListener('click', closePicker);
-document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape' && !picker.hidden) { e.stopPropagation(); closePicker(); }
-});
 updatePickerButton();
 buildPicker();
+
+/* --------------------------- the guide pop-up ---------------------------
+   The page opens on an explainer rather than on a run nobody asked for: what the tool measures,
+   the two shapes a session comes in, and the shortcuts. It offers a start rather than a lecture —
+   each card names the scenario it will load and measures it at the settings in force, the same
+   way the picker does, so the numbers on the card are the run you get and not a reference profile.
+
+   Two shapes because the one thing a first reader cannot guess is that prefill and decode pull in
+   opposite directions: the same harness is a different machine depending on whether the engine is
+   reading or writing, and looking at one of them tells you nothing about the other. The rest of
+   the corpus is the space between these two ends and is one click further, in the picker.
+
+   It stands aside when asked to — `?intro=0`, which a link can carry, or a run told to play itself
+   — and the `?` in the header brings it back: an explainer you can only read once is an explainer
+   you cannot read. The ✕, the backdrop or `esc` puts it away. There is deliberately no preference
+   stored for it. The page is a file you open from disk and read again, and a guide you cannot get
+   back to is worse than one you see twice. */
+const intro = $('#introModal'), introBackdrop = $('#introBackdrop'), introBtn = $('#introBtn'),
+      introShapes = $('#introShapes'), introBrowse = $('#introBrowse');
+/* the two ends of the corpus. Named by id so the guide says which session it is loading; the
+   selftest holds them to their billing, so a corpus that stops being shaped this way fails
+   loudly instead of quietly printing the wrong label over the right card. */
+const INTRO_SHAPES = [
+  { id: 'greenfield', kicker: 'decode-heavy',
+    copy: 'A chat-shaped turn: a small prompt, a long answer. The engine spends more time writing '
+        + 'than reading, so decode — the green band — is the one to watch, and the run is short '
+        + 'enough to watch twice.' },
+  { id: 'long-log', kicker: 'prefill-heavy',
+    copy: 'Almost the whole run is prefill: a wall of context re-read from the start on every turn '
+        + 'to produce a paragraph, and that amber is the cost of the context, not of the answer.' },
+];
+
+/* localStorage is not used anywhere on this page, and the guide is the reason it is not: the one
+   thing worth remembering would be "stop explaining", and a page that can be opened straight from
+   disk is an opaque origin where storage may be refused outright. */
+
+function buildIntro() {
+  introShapes.innerHTML = '';
+  for (const sh of INTRO_SHAPES) {
+    const s = SESSIONS.find((x) => x.id === sh.id);
+    if (!s) continue;
+    const ref = scenarioStats(s.id);
+    const b = el('button', 'shape');
+    b.type = 'button';
+    b.title = 'Load ' + s.name + ' and start the run';
+    b.appendChild(el('span', 'shapeKicker', sh.kicker));
+    b.appendChild(el('span', 'shapeName', s.name));
+    b.appendChild(el('span', 'shapeCopy', sh.copy));
+    b.appendChild(el('span', 'shapeStats',
+      ratioLabel(ref.in, ref.out) + ' · ' + fmtDur(ref.total) + ' · ' +
+      s.steps.filter((x) => x.role === 'assistant').length + ' turns'));
+    b.appendChild(el('span', 'shapeGo', 'load and run →'));
+    /* choosing a shape IS the ask, so this one starts the clock — the page opens parked because
+       it should not start by itself, not because pressing a button should do nothing */
+    b.addEventListener('click', () => {
+      closeIntro();
+      selectScenario(s.id);
+      play();
+    });
+    introShapes.appendChild(b);
+  }
+  introBrowse.textContent = 'browse all ' + SESSIONS.length + ' sessions →';
+  introBrowse.title = 'The full corpus, measured at these settings';
+  /* the keys name the speed range rather than restating it, so the list cannot claim a key the
+     transport does not implement */
+  $('#introSpeedKeys').textContent = '1 – ' + SPEEDS.length;
+  $('#introSpeedRange').textContent = SPEEDS[0] + '× – ' + SPEEDS[SPEEDS.length - 1] + '×';
+}
+
+/* one lock for the page: the two panels share it, so leaving the picker does not unlock the
+   scroll behind the guide that is still up */
+function syncModalLock() {
+  document.documentElement.classList.toggle('modal-open', !picker.hidden || !intro.hidden);
+}
+
+function openIntro() {
+  /* measured on every open, for the same reason the picker is: the cards quote the settings you
+     have, so a guide opened after you moved the sliders is not the guide that opened on load */
+  buildIntro();
+  intro.hidden = false;
+  introBackdrop.hidden = false;
+  syncModalLock();
+  intro.focus();
+}
+function closeIntro() {
+  intro.hidden = true;
+  introBackdrop.hidden = true;
+  syncModalLock();
+  /* back to the button that opens it, so closing the panel has not also dropped the keyboard on a
+     page the reader was not looking at */
+  introBtn.focus();
+}
+
+introBtn.addEventListener('click', () => (intro.hidden ? openIntro() : closeIntro()));
+$('#introClose').addEventListener('click', closeIntro);
+introBackdrop.addEventListener('click', closeIntro);
+/* the guide steps aside for the picker rather than stacking on it: two panels over one page is
+   a page you have to close twice to see */
+introBrowse.addEventListener('click', () => { closeIntro(); openPicker(); });
 
 const speedSel = $('#speed');
 for (const s of SPEEDS) {
@@ -2314,19 +2555,39 @@ transcript.addEventListener('scroll', () => {
 }, { passive: true });
 
 document.addEventListener('keydown', (e) => {
-  /* never hijack browser shortcuts (Cmd/Ctrl/Alt), typing in fields, or the space/enter a
-     focused button needs for itself — but a focused button must not swallow the arrows */
+  /* never hijack browser shortcuts (Cmd/Ctrl/Alt) or typing in a field */
   if (e.metaKey || e.ctrlKey || e.altKey) return;
   const tag = e.target && e.target.tagName;
   if (tag && /^(INPUT|SELECT|TEXTAREA)$/.test(tag)) return;
-  if (tag === 'BUTTON' && (e.code === 'Space' || e.key === 'Enter')) return;
+  /* `esc` belongs to the panel on top, and takes only that one. The picker stacks over the guide,
+     so one press leaves the guide where it was: the key that reads as "back" should not also
+     throw away a panel nobody asked to leave. With both down the key is mute, as it always was —
+     there is nothing to go back from, and it must not be mistaken for a transport key. It is
+     checked ahead of the button rule below so a caret sitting on a panel's own ✕ still gets out. */
+  if (e.key === 'Escape') {
+    if (picker.hidden && intro.hidden) return;
+    if (e.stopPropagation) e.stopPropagation();
+    if (!picker.hidden) closePicker(); else closeIntro();
+    return;
+  }
+  /* Enter is the focused button's own key, and inside a dialog so is space — that is how the ✕ and
+     the session rows are worked. Out here space is the transport's whatever was last clicked: a
+     click leaves the caret on the button, and a panel hands it back to the button it was opened
+     from, so a button that answered space would replay that click — put the guide away and press
+     space, and the guide comes back instead of the run starting. The button gives the caret up
+     first, because the browser activates a focused button on keyup and one press must be one
+     action. `r`, the arrows and the speed digits answer with the caret on a button as they did. */
+  if (tag === 'BUTTON' && e.key === 'Enter') return;
+  if (tag === 'BUTTON' && e.code === 'Space' && (!picker.hidden || !intro.hidden)) return;
+  if (tag === 'BUTTON' && e.code === 'Space' && e.target.blur) e.target.blur();
+  /* a panel is a dialog: while one is up, the transport keys would answer to the page behind it,
+     which the reader cannot see. The panel is closed from its own controls, the backdrop or `esc`,
+     so nothing reaches the transport until it is back on screen */
+  if (!picker.hidden || !intro.hidden) return;
   if (e.code === 'Space') { e.preventDefault(); togglePlay(); }
   else if (e.key === 'r' || e.key === 'R') restart();
   else if (e.key === 'ArrowRight') { e.preventDefault(); seek(vTime + (e.shiftKey ? 5 : 1)); }
   else if (e.key === 'ArrowLeft') { e.preventDefault(); seek(vTime - (e.shiftKey ? 5 : 1)); }
-  else if (e.key === 'p' || e.key === 'P') {
-    document.documentElement.classList.toggle('no-panel'); syncPanelToggle();
-  }
   else if (/^[1-9]$/.test(e.key) && Number(e.key) <= SPEEDS.length) {
     config.speed = SPEEDS[Number(e.key) - 1];
     speedSel.value = String(config.speed);
@@ -2348,9 +2609,16 @@ if (config.autoplay) play(); else { updatePlayBtn(); render(vTime); }
 /* the console and the selftest both want to know where the playhead actually is, as
    opposed to what the clock says after formatting */
 window.AS = { config, sessions: SESSIONS, scenarioStats,
-              get tl() { return TL; }, get vTime() { return vTime; },
+              get tl() { return TL; }, get vTime() { return vTime; }, get playing() { return playing; },
               rebuild, seek, play, pause, phaseAt, render, stepPhase, selectSession: selectScenario,
-              openPicker, closePicker };
+              openPicker, closePicker, openIntro, closeIntro,
+              /* a copy, not the live collection: `children` empties itself when the guide rebuilds,
+                 so a caller that grabbed it first would watch it drain */
+              introShapes: () => Array.from(introShapes.children) };
+/* the guide goes up last, over a page already drawn behind it, so it is read against the real
+   thing rather than an empty pane. It keeps out of the way of a run told to play itself, and of a
+   link that asked for the page without the lecture. */
+if (config.intro && !config.autoplay) openIntro();
 
 })();
 </script>
