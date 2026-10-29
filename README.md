@@ -47,10 +47,11 @@ editing only.
 open index.html
 ```
 
-The defaults are a local-inference profile — 1500 tok/s prefill, 50 tok/s decode, prompt cache
-on — which makes the `long-log` corpus a three minute run at 1× playback, or seven and a half
-with the cache unticked. The engine card also carries four presets — `local`, `API`,
-`API (fast)`, `ASIC` — for the machines people actually run against, see [Engine presets](#engine-presets).
+The defaults are the `local` preset with the prompt cache on. The engine card also carries four
+presets — `local`, `API`, `API (fast)`, `ASIC` — for the machines people actually run against, see
+[Engine presets](#engine-presets). This file quotes no run figures: every duration and ratio belongs
+to the engine settings, so the summary card states them for the run in front of you and they move
+with the sliders.
 Add `speed=4` for a quicker look, or `session=greenfield` for a
 small-context one.
 
@@ -97,9 +98,8 @@ even when the engine is idle.
 
 It is billed as any other generated token: it costs decode time, and it stays in the history, so
 it is re-read on every later turn the way a harness that echoes thinking blocks back re-reads it.
-The re-read is the small part — prefill runs thirty times faster than decode at the defaults, and
+The re-read is the small part — prefill runs far faster than decode on a local engine, and
 the cache usually skips it — so the price of a trace is mostly the seconds it spent being written.
-A 138 token trace on `long-log` adds 3.4s to a 188s run with the cache on and 4.1s with it off.
 
 The `audit` corpus is the case where that is the whole story: three quarters of what the model
 generates is reasoning, so the run spends most of its wall time streaming text the transcript
@@ -123,16 +123,16 @@ runs one of these mid-way; the transcript shows the harness step (`context compa
 6.3k summary`), and the summary adds `peak context` and `harness compactions` rows so the
 drop — and the cache rebuild — is visible at a glance.
 
-The difference is most visible on the turns that follow something small. Request four of
-`long-log` arrives after a two line diff, so it prefills 138 tokens in 155 ms, where an
-uncached engine would still be re-reading 56k tokens for 50 seconds. Request six prefills 8k
-tokens in 13.4 s against 149.2 s cold, and the session as a whole is 188 s rather than 470 s.
+The difference is most visible on the turns that follow something small. A request that arrives
+after a two line diff prefills that diff and nothing else, where an uncached engine is still
+re-reading the whole history; `long-log` is built out of those turns, and the summary's
+`prefill (cached)` row is what they add up to.
 
 What caching does *not* rescue is throughput. The fresh chunk still attends to the whole
-history, so it pays the curve wherever the session has reached: effective prefill falls from
-1386 tok/s on the first request to 598 on the last, and decode from 43 tok/s to 19. Caching
-skips work on the part of the prompt the engine has already ingested; the curve taxes the new
-tokens by how much history they have to attend to.
+history, so it pays the curve wherever the session has reached: effective prefill and decode both
+fall, request by request, as the context grows. Caching skips work on the part of the prompt the
+engine has already ingested; the curve taxes the new tokens by how much history they have to
+attend to.
 
 ## Controls
 
@@ -150,10 +150,10 @@ It also offers a starting point rather than an empty page, because the one thing
 cannot guess is that prefill and decode pull in opposite directions. Two cards, two ends of the
 corpus:
 
-| card | loads | at the shipped profile |
-|------|-------|------------------------|
-| **decode-heavy** | `greenfield · small context` | `0.38 in : 1 out` — a chat-shaped turn, small prompt and long answer, ~19 s of run |
-| **prefill-heavy** | `long-log · context blowout` | `6.2 in : 1 out` — a wall of context re-read every turn to produce a paragraph, ~3 m |
+| card | loads | the turn it stands for |
+|------|-------|-----------------------|
+| **decode-heavy** | `greenfield · small context` | a chat-shaped turn: small prompt, long answer |
+| **prefill-heavy** | `long-log · context blowout` | a wall of context re-read every turn to produce a paragraph |
 
 Both are *measured* when the panel opens, at whatever the sliders say, the same way the picker
 measures its rows — the card quotes the run you would get, not a profile it was authored against.
@@ -247,14 +247,14 @@ shows every call it made.
 
 The **session summary is the first card in the
 panel**, because it is the thing you come back to after every settings change: it leads with
-`total` and `prefill : decode` — the split between the two faces of inference, `6.2 : 1` for
-`long-log`, `0.27 : 1` for `doc` — then the phases, the context, and what the prompt cache
-avoided. Three rows share one shape, `126k tok (2m 28s)`, so the card reads as columns:
+`total` and `prefill : decode` — the split between the two faces of inference — then the phases,
+the context, and what the prompt cache avoided. Three rows share one shape, a token count with the
+time it took in parentheses, so the card reads as columns:
 
 ```
-prefill             126k tok (2m 28s)
-prefill (cached)    285k tok (4m 42s)
-decode              677 tok (24.05s)
+prefill             <tokens> tok  (<time>)
+prefill (cached)    <tokens> tok  (<time>)
+decode              <tokens> tok  (<time>)
 ```
 
 The **requests history is the second card**, directly under the summary rather than at the far
@@ -362,7 +362,7 @@ writes **prefill, decode and request latency**, in tok/s and ms:
 
 | preset      | prefill | decode | request latency | reads as                                          |
 |-------------|---------|--------|-----------------|---------------------------------------------------|
-| `local`     | 1500    | 50     | 300 ms          | a model on your own hardware, the one the page ships on |
+| `local`     | 750     | 50     | 300 ms          | a model on your own hardware, the one the page ships on |
 | `API`       | 10k     | 75     | 3 s             | a hosted frontier API — fast reads, a round trip on every request |
 | `API (fast)`| 10k     | 250    | 1 s             | the fast API tier, a DeepSeek V4 Flash class model — fast reads and a much faster stream |
 | `ASIC`      | 20k     | 10k    | 500 ms          | fixed-weight inference silicon, where the run becomes tool-bound |
