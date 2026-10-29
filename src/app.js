@@ -1015,27 +1015,27 @@ function rebuild() {
 function tipsFor(cache) {
   return {
     total: 'Wall time of the run: queue + prefill + decode + tool exec + harness overhead.',
-    split: 'Ratio between prefill and decode time. 1 : 1 means one second of prompt processing '
+    split: 'Prefill to decode time ratio. 1 : 1 means one second of prompt processing '
          + 'for every second of decoding.',
     prefill: 'Prompt tokens the engine had to process, and the total time it took, at prefill '
            + 'tok/s × the decay curve. ' + (cache
              ? 'Prompt tokens that are already cached are not included in this count.'
              : 'Repeated prompt tokens are re-read and re-processed on every turn.'),
-    decode: 'Time spent generating, one token at a time at decode tok/s × the curve.'
+    decode: 'Time spent generating, one token at a time, at decode tok/s × the decay curve.'
           + (cache
             ? ' Once generated, tokens are cached and the model is never charged for re-reading them.'
             : ''),
     tool: 'Time spent in the harness executing tools. Does not involve the engine, but is part '
         + 'of the total wall time.',
-    queue: 'Network and scheduler latency (latency ± jitter): time before a request is processed by the engine.',
-    gaps: 'What the harness spends between turns: 150 ms before a user message, 120 ms after a '
+    queue: 'The network and scheduler wait (latency ± jitter) before the engine starts working on a request.',
+    gaps: 'What the harness spends between turns: 150ms before a user message, 120ms after a '
         + 'tool result.',
     requests: 'Number of steps taken by the harness.',
     peak: 'The largest prompt of the session, reached before the harness compacted the history '
         + 'away. Context only ever shrinks at a compaction.',
     compactions: 'When the context is too large for the engine to handle, the harness compacts '
                + 'it by rewriting the history into a smaller form. The next request re-prefills '
-                 + 'the context at full cost as compaction invalidated the cache.',
+                 + 'the context at full cost, because the compaction invalidates the cache.',
     final: 'Context size at the end of the session.',
     avgPrefill: 'Average prefill speed over the course of the session.',
     avgDecode: 'Average decode speed over the course of the session.',

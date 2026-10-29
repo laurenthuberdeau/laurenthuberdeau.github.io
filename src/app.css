@@ -202,7 +202,7 @@
   /* One line for the pair the group is about, with the units to the right of their fields as
      everywhere else in the panel: the only concession to fitting both is a narrower unit
      column, since "ms" does not need the 46px the engine's "tok/s" is sized for. The ±
-     between the fields reads as the relationship they have — jitter is the spread on that
+     between the fields reads as the relationship they have — jitter is the variation on that
      same wait, not a second setting beside it — and the row may wrap rather than clip if the
      panel ever gets tighter. */
   .row.duo { flex-wrap: wrap; }

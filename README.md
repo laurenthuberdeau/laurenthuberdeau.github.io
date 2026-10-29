@@ -305,7 +305,7 @@ name through `aria-labelledby`; what that trades away is click-to-focus on the n
 and the slider are clicked directly. Prefill and decode name what their rate counts and say it
 decays as the context grows, following the decay curve; the cache toggle says what the engine
 stops re-processing and that a compaction invalidates it; the request wait says what the engine
-waits on before it starts work, and the spread answers for itself inside the row because the
+waits on before it starts work, and the jitter answers for itself inside the row because the
 nearest note is the one you get. The summary card reuses the same vocabulary loosely — it speaks
 of `prefill tok/s × the decay curve` where the engine card says the speed "decays as the context
 grows" — and the two are deliberately free to phrase things differently. One documentation

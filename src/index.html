@@ -45,7 +45,7 @@
 </header>
 
 <div class="phasebar" id="phase" data-phase="idle" role="button" tabindex="0"
-     title="The phase the engine is in right now — queue, prefill, decode or the tool call execution. Click (or enter/space) to step to the next phase, shift-click to step to the one before.">
+     title="The phase the engine is in right now — queue, prefill, decode or tool call. Click (or enter/space) to step to the next phase, shift-click to step to the one before.">
   <div class="fill"></div><span class="k">idle</span><span class="v">—</span><span class="next"></span>
 </div>
 
@@ -89,21 +89,21 @@
         <div class="row"><span class="cap" id="prefillName">prefill speed</span><input id="prefill" type="number" min="50" max="100000" step="50" aria-labelledby="prefillName"><span class="unit">tok/s</span></div>
         <input id="prefillRange" aria-label="prefill speed, as a slider" type="range" min="0" max="100" step="0.5">
       </div>
-      <div class="ctl" title="Tokens per second while generating output: prose, chain of thought and tool-calls. Decode speed decays as the context grows, following the decay curve.">
+      <div class="ctl" title="Tokens per second while generating output: prose, chain of thought and tool calls. Decode speed decays as the context grows, following the decay curve.">
         <div class="row"><span class="cap" id="decodeName">decode speed</span><input id="decode" type="number" min="0" max="10000" step="5" aria-labelledby="decodeName"><span class="unit">tok/s</span></div>
         <input id="decodeRange" aria-label="decode speed, as a slider" type="range" min="0" max="100" step="0.5">
       </div>
       <div class="row" title="Cache prompt tokens between requests, so the engine does not have to re-process them on every turn. The cache is invalidated by a context compaction."><span class="cap" id="cacheName">prompt cache</span><input id="cache" type="checkbox" aria-labelledby="cacheName"><span class="unit"></span></div>
       <div class="gsub"
-           title="Waits the engine imposes outside the model's own work. With latency and spread both at zero, the run is a pure throughput model.">contention</div>
-      <div class="row duo" title="Time it takes for the engine to start working on a request."><span class="cap" id="latencyName">request latency</span><input id="latency" type="number" min="0" max="120000" step="50" aria-labelledby="latencyName"><span class="pm" aria-hidden="true">±</span><input id="jitter" type="number" min="0" max="60000" step="50" aria-label="time variation in the request latency, in ms" title="Time variation in the request latency, introducing some randomness to the wait."><span class="unit">ms</span></div>
-      <div class="hint" id="engineHint" title="Time to first token: time it takes to get the first token returned by the engine."></div>
+           title="Waits the engine imposes outside the model's own work. With latency and jitter both at zero, the run is a pure throughput model.">contention</div>
+      <div class="row duo" title="Time it takes for the engine to start working on a request."><span class="cap" id="latencyName">request latency</span><input id="latency" type="number" min="0" max="120000" step="50" aria-labelledby="latencyName"><span class="pm" aria-hidden="true">±</span><input id="jitter" type="number" min="0" max="60000" step="50" aria-label="time variation in the request latency, in ms" title="Time variation in the request latency: each request waits a little more or a little less."><span class="unit">ms</span></div>
+      <div class="hint" id="engineHint" title="Time to first token — how long before anything arrives: the queue wait, the prefill, and one decoded token."></div>
       <!-- the decay curve is not a setting beside these ones; it is the shape of the two speeds above,
            since each is a rate *at a point on this curve*. So it closes the engine card as a group in
            `contention`'s idiom — caption carrying the definition on hover, no heading of its own —
            rather than being the card after the one it has to be read against. -->
       <div class="gsub"
-           title="How much of full speed the engine still manages as a request grows. Each point is a context size and the percentage of the prefill and decode speeds above that survives at it; both of them follow this curve. A preset writes this curve and the points table under it, and nothing else.">throughput decay curve · <span id="curveN">N</span>-point</div>
+           title="How much of full speed the engine still manages as the context grows. Each point is a context size and the percentage of the prefill and decode speeds above that survives at it; both of them follow this curve. A preset writes this curve and the points table under it, and nothing else.">throughput decay curve · <span id="curveN">N</span>-point</div>
       <!-- the four named curves go above the thing they replace: pressing one redraws the chart and
            rewrites the table under it, so the choice comes first and its result after, the same way
            the engine presets sit above the fields they write. Equal quarters of the card for the same
@@ -174,10 +174,10 @@
       <li><b>prefill speed</b> — rate at which the engine can read the prompt and context.</li>
       <li><b>decode speed</b> — rate at which the engine can generate and stream the answer.</li>
       <li><b>engine presets</b> — a named machine as prefill, decode and request latency.</li>
-      <li><b>prompt caching</b> — whether the engine re-reads the prompt and context every turn, or
+      <li><b>prompt cache</b> — whether the engine re-reads the prompt and context every turn, or
         reuses them.</li>
       <li><b>request latency</b> — how long the request waits before the engine starts processing it.</li>
-      <li><b>throughput decay curve</b> — how the engine’s throughput decreases as the request size increases.</li>
+      <li><b>throughput decay curve</b> — how the engine's throughput decreases as the context grows.</li>
     </ul>
 
     <h3>Shortcuts</h3>

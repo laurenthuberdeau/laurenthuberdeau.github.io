@@ -421,7 +421,7 @@ const OPTION_EVIDENCE = [
   ['prefill speed', () => /id="prefill"/.test(html) && /id="prefillRange"/.test(html)],
   ['decode speed', () => /id="decode"/.test(html) && /id="decodeRange"/.test(html)],
   ['engine presets', () => /id="profiles"/.test(html)],
-  ['prompt caching', () => /id="cache"/.test(html)],
+  ['prompt cache', () => /id="cache"/.test(html)],
   ['request latency', () => /id="latency"/.test(html)],
   ['throughput decay curve', () => /id="curveTable"/.test(html)],
 ];
