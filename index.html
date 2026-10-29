@@ -729,7 +729,7 @@ const SESSIONS = [
   {
     id: 'deep-fix',
     name: 'deep fix · harness compaction',
-    about: 'A render pipeline RSS leak, with a harness compaction mid-session: context spikes to ~69k, the history is collapsed to a summary, and the prefix cache is blown away. The two-sided trade — compaction shortens the run but destroys cache reuse — visible in one session.',
+    about: 'A render pipeline RSS leak, with a harness compaction mid-session: context spikes to ~70k, the history is collapsed to a summary, and the prefix cache is blown away. The two-sided trade — compaction shortens the run but destroys cache reuse — visible in one session.',
     bootTokens: 12000,
     steps: [
       { role: 'user', text: 'The render pipeline RSS grows about 40MB per frame-snapshot export batch on the viewer box. Logs are in /var/log/viewer/render.log from last night\'s run. Find the leak and fix it so a batch can finish without the box swapping.' },
@@ -981,7 +981,7 @@ const SESSIONS = [
   {
     id: 'audit',
     name: 'concurrency audit · thinking-bound',
-    about: 'A worker that stalls weekly with no crash, no log and no reproducer, so no tool can answer it. Five turns, ~77% of what the engine generates is reasoning that never reaches the transcript. The most decode-heavy split in the set: the decode band runs for tens of seconds while the transcript looks idle.',
+    about: 'A worker that stalls weekly with no crash, no log and no reproducer, so no tool can answer it. Five turns, ~74% of what the engine generates is reasoning that never reaches the transcript. The most decode-heavy split in the set: the decode band runs for tens of seconds while the transcript looks idle.',
     bootTokens: 7400,
     steps: [
       { role: 'user', text: 'A checkout worker stalls once or twice a week, always in us-east, never on a test box, and both are arm64. No crash, no log line, no core — the thread simply stops making progress and the supervisor restarts it. I cannot give you a reproducer and I will not let anything run on that host while the incident clock is up. Read the queue it hands work through and tell me what you would stake the fix on.' },
@@ -1018,8 +1018,34 @@ const SESSIONS = [
 /* ------------------------------- helpers -------------------------------- */
 const $ = (s) => document.querySelector(s);
 const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
-const TOKEN_RE = /\S+\s*/g;
-const tokenize = (s) => s.match(TOKEN_RE) || [];
+/* A closer approximation of a real tokenizer than one token per word. A BPE vocabulary carries the
+   common short word whole and breaks the long or the rare one into pieces of a handful of characters,
+   so any chunk longer than five characters costs more than one: cut into segments of five, `the` is
+   one token, `compaction` is two and `invalidates` is three. Boundaries come first, as they do in a
+   real vocabulary: every punctuation or symbol character is a token of its own, so `foo-bar` is
+   `foo`, `-`, `bar` and `"foo"` is `"`, `foo`, `"`; and a run of digits splits off from the letters
+   around it, so `port8080` is `port` and `8080`. Whitespace rides with the piece it follows,
+   exactly as it did when a chunk was one token, so the pieces still join back into the text the
+   transcript streams out.
+
+   Approximate on purpose: a real tokenizer splits on learned merges rather than at a fixed five, and
+   merges punctuation and digits differently again. What the page needs is that a 400-character JSON
+   blob and a one-line shell command are not the same size — which one token per word could not tell
+   apart, since both were one. */
+const WORD_RE = /\S+\s*/g;                        /* a word, with the whitespace that follows it */
+const PIECE_RE = /[\p{L}_]+|\d+|[^\s\p{L}\d_]/gu; /* letters · one run of digits · one other character */
+const TOKEN_CHARS = 5;
+const tokenize = (s) => {
+  const out = [];
+  for (const word of s.match(WORD_RE) || []) {
+    const trail = word.match(/\s+$/)?.[0] ?? '';  /* whitespace rides with the piece before it */
+    const pieces = word.slice(0, word.length - trail.length).match(PIECE_RE) || [];
+    for (const piece of pieces)
+      for (let i = 0; i < piece.length; i += TOKEN_CHARS) out.push(piece.slice(i, i + TOKEN_CHARS));
+    if (trail && out.length) out[out.length - 1] += trail;
+  }
+  return out;
+};
 
 function fmtTok(n) {
   if (!Number.isFinite(n)) return '—';
@@ -2017,7 +2043,7 @@ function rebuild() {
 function tipsFor(cache) {
   return {
     total: 'Wall time of the run: queue + prefill + decode + tool exec + harness overhead.',
-    split: 'Ratio of prefill to decode time. 1 : 1 means one second of prompt processing '
+    split: 'Prefill to decode time ratio. 1 : 1 means one second of prompt processing '
          + 'for every second of decoding.',
     prefill: 'Prompt tokens the engine had to process, and the total time it took, at prefill '
            + 'tok/s × the decay curve. ' + (cache
@@ -2029,7 +2055,7 @@ function tipsFor(cache) {
             : ''),
     tool: 'Time spent in the harness executing tools. Does not involve the engine, but is part '
         + 'of the total wall time.',
-    queue: 'The network and scheduler wait — latency ± jitter — before the engine starts on a request.',
+    queue: 'The network and scheduler wait (latency ± jitter) before the engine starts working on a request.',
     gaps: 'What the harness spends between turns: 150ms before a user message, 120ms after a '
         + 'tool result.',
     requests: 'Number of steps taken by the harness.',

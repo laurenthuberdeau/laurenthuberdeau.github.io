@@ -16,8 +16,34 @@
 /* ------------------------------- helpers -------------------------------- */
 const $ = (s) => document.querySelector(s);
 const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
-const TOKEN_RE = /\S+\s*/g;
-const tokenize = (s) => s.match(TOKEN_RE) || [];
+/* A closer approximation of a real tokenizer than one token per word. A BPE vocabulary carries the
+   common short word whole and breaks the long or the rare one into pieces of a handful of characters,
+   so any chunk longer than five characters costs more than one: cut into segments of five, `the` is
+   one token, `compaction` is two and `invalidates` is three. Boundaries come first, as they do in a
+   real vocabulary: every punctuation or symbol character is a token of its own, so `foo-bar` is
+   `foo`, `-`, `bar` and `"foo"` is `"`, `foo`, `"`; and a run of digits splits off from the letters
+   around it, so `port8080` is `port` and `8080`. Whitespace rides with the piece it follows,
+   exactly as it did when a chunk was one token, so the pieces still join back into the text the
+   transcript streams out.
+
+   Approximate on purpose: a real tokenizer splits on learned merges rather than at a fixed five, and
+   merges punctuation and digits differently again. What the page needs is that a 400-character JSON
+   blob and a one-line shell command are not the same size — which one token per word could not tell
+   apart, since both were one. */
+const WORD_RE = /\S+\s*/g;                        /* a word, with the whitespace that follows it */
+const PIECE_RE = /[\p{L}_]+|\d+|[^\s\p{L}\d_]/gu; /* letters · one run of digits · one other character */
+const TOKEN_CHARS = 5;
+const tokenize = (s) => {
+  const out = [];
+  for (const word of s.match(WORD_RE) || []) {
+    const trail = word.match(/\s+$/)?.[0] ?? '';  /* whitespace rides with the piece before it */
+    const pieces = word.slice(0, word.length - trail.length).match(PIECE_RE) || [];
+    for (const piece of pieces)
+      for (let i = 0; i < piece.length; i += TOKEN_CHARS) out.push(piece.slice(i, i + TOKEN_CHARS));
+    if (trail && out.length) out[out.length - 1] += trail;
+  }
+  return out;
+};
 
 function fmtTok(n) {
   if (!Number.isFinite(n)) return '—';

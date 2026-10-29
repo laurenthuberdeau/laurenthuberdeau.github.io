@@ -90,7 +90,7 @@ const SESSIONS = [
   {
     id: 'deep-fix',
     name: 'deep fix · harness compaction',
-    about: 'A render pipeline RSS leak, with a harness compaction mid-session: context spikes to ~69k, the history is collapsed to a summary, and the prefix cache is blown away. The two-sided trade — compaction shortens the run but destroys cache reuse — visible in one session.',
+    about: 'A render pipeline RSS leak, with a harness compaction mid-session: context spikes to ~70k, the history is collapsed to a summary, and the prefix cache is blown away. The two-sided trade — compaction shortens the run but destroys cache reuse — visible in one session.',
     bootTokens: 12000,
     steps: [
       { role: 'user', text: 'The render pipeline RSS grows about 40MB per frame-snapshot export batch on the viewer box. Logs are in /var/log/viewer/render.log from last night\'s run. Find the leak and fix it so a batch can finish without the box swapping.' },
@@ -342,7 +342,7 @@ const SESSIONS = [
   {
     id: 'audit',
     name: 'concurrency audit · thinking-bound',
-    about: 'A worker that stalls weekly with no crash, no log and no reproducer, so no tool can answer it. Five turns, ~77% of what the engine generates is reasoning that never reaches the transcript. The most decode-heavy split in the set: the decode band runs for tens of seconds while the transcript looks idle.',
+    about: 'A worker that stalls weekly with no crash, no log and no reproducer, so no tool can answer it. Five turns, ~74% of what the engine generates is reasoning that never reaches the transcript. The most decode-heavy split in the set: the decode band runs for tens of seconds while the transcript looks idle.',
     bootTokens: 7400,
     steps: [
       { role: 'user', text: 'A checkout worker stalls once or twice a week, always in us-east, never on a test box, and both are arm64. No crash, no log line, no core — the thread simply stops making progress and the supervisor restarts it. I cannot give you a reproducer and I will not let anything run on that host while the incident clock is up. Read the queue it hands work through and tell me what you would stake the fix on.' },

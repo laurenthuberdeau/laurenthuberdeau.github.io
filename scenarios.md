@@ -64,8 +64,8 @@ already covers, not re-tread one.
 - **Cache interaction** — tiny fresh chunks (`sweep`, `doc`) vs. cache-busting events
   (compaction in `deep-fix`), vs. cold re-prefill of huge dumps (`long-log`, `repro`).
 - **Phase dominance** — read it off the summary's `prefill : decode` row: prefill-heavy
-  `long-log` 9.8:1, balanced `sweep` 1.1:1, decode-heavy `doc` 0.49:1, hidden-decode `audit`
-  0.25:1, and tool-bound `migration` where neither phase is the story at all. Contention is a
+  `long-log` 6.2:1, balanced `sweep` 0.68:1, decode-heavy `doc` 0.27:1, hidden-decode `audit`
+  0.18:1, and tool-bound `migration` where neither phase is the story at all. Contention is a
   slider, not a corpus, but per-request latency is most visible on `sweep`, which has the most
   requests.
 - **Turn texture** — search loops (`bug-hunt`, `sweep`), long monologues (`doc`, the closing
@@ -84,9 +84,9 @@ fails if `session.split` and the corpus's own measurement disagree. It is a char
 a prediction: change the engine speeds or the curve and the live split moves, which is why the
 summary row repeats the reference value whenever you are off the default profile.
 
-The extremes are the point. `long-log` at 9.8:1 spends ten seconds reading for every second
-of writing; `doc` at 0.49:1 is the opposite shape; `migration` sits at 0.73:1 while spending two
-thirds of its wall time inside one `CREATE INDEX`, which is the reminder that the ratio is not
+The extremes are the point. `long-log` at 6.2:1 spends six seconds reading for every second
+of writing; `doc` at 0.27:1 is the opposite shape; `migration` sits at 0.46:1 while spending nearly
+nine tenths of its wall time inside one `CREATE INDEX`, which is the reminder that the ratio is not
 the whole story either.
 
 ## Implemented
@@ -96,40 +96,41 @@ that scenario at the default profile, not a label anyone maintains by hand.
 
 | id | name | boot | requests | tools | pf:dk | shape | demonstrates |
 |---|---|---|---|---|---|---|---|
-| `greenfield` | greenfield · small context | 6.2k | 4 | 3 | 0.54:1 | small, clean feature work | baseline prefill/decode; tiny context; cache near-irrelevant |
-| `bug-hunt` | bug hunt · medium context | 9.4k | 5 | 4 | 1.6:1 | gradual growth, mixed tools | fault-finding arc; ordering bug; medium decay |
-| `long-log` | long log · context blowout | 11.8k | 6 | 5 | 9.8:1 | blowout to ~126k | curve grind; cache headline (177s vs 452s cold) |
-| `deep-fix` | deep fix · harness compaction | 12.0k | 5 | 4 + 1 compact | 4.9:1 | spike to ~69k, compaction mid-run | compaction busts the prefix cache; re-prefill is flagged in the history |
-| `sweep` | batch edits · cache showcase | 5.4k | 7 | 6 | 1.1:1 | fourteen steps, mostly tiny diffs, peak ~33k | a codemod plus hand fixes; four of the seven requests prefill under 60 ms; 88s of prefill avoided |
-| `oncall` | production incident · context spike | 9.8k | 5 | 4 | 2.5:1 | one 84k dump, then tightening turns, peak ~97k | a *sharp* single-prefill spike landing on the `cliff` drop at 96k–100k; no gradual buildup |
-| `migration` | backfill · tool-bound | 8.1k | 5 | 4 | 0.73:1 | four turns, `execMs` 31s–240s, peak ~22k | the tool phase dominating wall time, 411s of it, ~7 minutes of one index build |
-| `refactor` | monolith split · steady grind | 12.5k | 6 | 5 | 2.4:1 | steady climb to ~95k, reads then edits | the typical long coding session that ends on the steepest part of the curve |
-| `doc` | API reference · decode-bound | 7.2k | 5 | 4 | 0.49:1 | two long writes, one read, peak ~25k | decode dominance; the artifact streams through tool args and generated tokens stay resident |
-| `repro` | crash repro · huge boot | 24k | 6 | 5 | 1.3:1 | a short incident over a giant repo map | request one re-prefills the boot prompt for 18.5s, more than the next four combined |
+| `greenfield` | greenfield · small context | 6.2k | 4 | 3 | 0.38:1 | small, clean feature work | baseline prefill/decode; tiny context; cache near-irrelevant |
+| `bug-hunt` | bug hunt · medium context | 9.4k | 5 | 4 | 1.0:1 | gradual growth, mixed tools | fault-finding arc; ordering bug; medium decay |
+| `long-log` | long log · context blowout | 11.8k | 6 | 5 | 6.2:1 | blowout to ~126k | curve grind; cache headline (188s vs 470s cold) |
+| `deep-fix` | deep fix · harness compaction | 12.0k | 5 | 4 + 1 compact | 3.1:1 | spike to ~70k, compaction mid-run | compaction busts the prefix cache; re-prefill is flagged in the history |
+| `sweep` | batch edits · cache showcase | 5.4k | 7 | 6 | 0.68:1 | fourteen steps, mostly tiny diffs, peak ~34k | a codemod plus hand fixes; four of the seven requests prefill under 170 ms; 93s of prefill avoided |
+| `oncall` | production incident · context spike | 9.8k | 5 | 4 | 1.6:1 | one 84k dump, then tightening turns, peak ~99k | a *sharp* single-prefill spike landing on the `cliff` drop at 96k–100k; no gradual buildup |
+| `migration` | backfill · tool-bound | 8.1k | 5 | 4 | 0.47:1 | four turns, `execMs` 31s–240s, peak ~23k | the tool phase dominating wall time, 411s of it, ~7 minutes of one index build |
+| `refactor` | monolith split · steady grind | 12.5k | 6 | 5 | 1.5:1 | steady climb to ~96k, reads then edits | the typical long coding session that ends on the steepest part of the curve |
+| `doc` | API reference · decode-bound | 7.2k | 5 | 4 | 0.27:1 | two long writes, one read, peak ~27k | decode dominance; the artifact streams through tool args and generated tokens stay resident |
+| `repro` | crash repro · huge boot | 24k | 6 | 5 | 0.87:1 | a short incident over a giant repo map | request one re-prefills the boot prompt for 18.8s, more than the next four combined |
+| `audit` | concurrency audit · thinking-bound | 7.4k | 5 | 4 | 0.18:1 | five turns, peak ~14k, most of the output never shown | chain of thought as the workload: three quarters of what the engine generates is reasoning |
 
 ### `deep-fix` (compaction showcase)
 
 "The render pipeline RSS grows ~40MB per export batch." A long context-building session —
-a 26k log dump and a 31k source read push context to ~69k — then the harness compacts:
+a 26k log dump and a 31k source read push context to ~70k — then the harness compacts:
 
-- context drops 69k → 18k (boot 12k + 6.3k summary),
+- context drops 70k → 18k (boot 12k + 6.3k summary),
 - the history flags the request after the compact (`↻` + red bar, `re-prefill · 6.3k (cache invalidated)`),
 - the transcript states the cost (`only 12k boot cached · next request re-prefills 6.3k cold`),
-- summary shows `peak context 69k tok` above `harness compactions 1×`, with `final context`
-  30k below them — the drop and the rebuild in one glance.
+- summary shows `peak context 70k tok` above `harness compactions 1×`, with `final context`
+  31k below them — the drop and the rebuild in one glance.
 
-Measured against the same corpus with the compact step removed: total prefill 46.7s vs 80.9s
-(compaction wins by moving the tail off the deep curve), but cache reuse drops from 171s saved
+Measured against the same corpus with the compact step removed: total prefill 47.8s vs 82s
+(compaction wins by moving the tail off the deep curve), but cache reuse drops from 175s saved
 to 45s (compaction destroys the prefix). That two-sided trade-off is the point.
 
 ### `sweep` (cache showcase)
 
 A public-API rename: a wide grep, a codemod that prints what it skipped, hand fixes for the
 test doubles, one full test run, one doc-snippet fix, one re-run. Everything after the grep is
-a fresh chunk of tens of tokens, so the history reads `30 ms`, `53 ms`, `27 ms`, `24 ms` in the
-prefill column while the same prompts would cost 30–45s cold — 88s of prefill never paid, on a
-run that is only 65s long. The 18k test-run output is the one turn that breaks the pattern and
-lands as 15.5s, which is what makes the other four legible: the cache is not free, it is
+a fresh chunk of tens of tokens, so the history reads `112 ms`, `167 ms`, `102 ms`, `52 ms` in the
+prefill column while the same prompts would cost 11–28s cold — 93s of prefill never paid, on a
+run that is only 87s long. The 18k test-run output is the one turn that breaks the pattern and
+lands as 16.0s, which is what makes the other four legible: the cache is not free, it is
 incremental, and the corpus has to show both.
 
 View it against `long-log`: same engine, same curve, one session where every result is small
@@ -151,30 +152,30 @@ waiting for a dashboard to be trustworthy, and none of it is inference.
 ### `migration` (tool dominance)
 
 Four `Bash` calls at 31s, 45s, 240s and 95s. Nothing else in the corpus goes past 12s. Context
-barely moves (22k peak) because a migration's tool results are summaries, not dumps, so
-prefill and decode together are 37s against 411s of tool exec — the seek bar is almost entirely
-one purple band, and the decay curve is nearly irrelevant. That is the shape the other nine
+barely moves (23k peak) because a migration's tool results are summaries, not dumps, so
+prefill and decode together are 53s against 411s of tool exec — the seek bar is almost entirely
+one purple band, and the decay curve is nearly irrelevant. That is the shape the other ten
 cannot show, and it is the shape where every "LLM latency" argument about agentic sessions is
 simply wrong.
 
 ### `doc` (decode dominance)
 
 The artifact is the output: two `Write` calls stream a markdown reference through the decode
-phase as tool args, ~800 tokens of document per request, against an 11ms prefill on the turn
-that follows them. 33s of decode against 18s of prefill, and the generated document stays in
+phase as tool args, ~800 tokens of document per request, against a 30 ms and a 43 ms prefill on
+the turns that follow them. 70s of decode against 19s of prefill, and the generated document stays in
 context as resident prefix — the next request does not re-ingest what the model itself wrote,
 which is the asymmetry the summary's `prefill : decode` row exists to make visible.
 
 ### `audit` (thinking dominance)
 
 A weekly worker stall with no crash, no log line and no reproducer, so nothing a tool could run
-will answer the question and the work happens in the traces. Five turns generate ~1390 tokens of
-which ~1070 are reasoning — **77% of what the engine produces never reaches the transcript**, and
-the visible answers are one or two sentences each. The result is 32s of decode against 8s of
-prefill (0.25:1, the most decode-dominated split in the corpus) with under a second of tool exec.
+will answer the question and the work happens in the traces. Five turns generate ~2000 tokens of
+which ~1480 are reasoning — **74% of what the engine produces never reaches the transcript**, and
+the visible answers are one or two sentences each. The result is 47s of decode against 8s of
+prefill (0.18:1, the most decode-dominated split in the corpus) with under a second of tool exec.
 It is the scenario that makes the phase bar legible: the decode band runs for tens of seconds
 while the transcript looks idle, because the tokens being emitted are gray. Raising decode cuts
-the run from 43s to 13s at 900 tok/s; making prefill effectively free only cuts it to 35s, which
+the run from 58s to 14s at 900 tok/s; making prefill effectively free only cuts it to 50s, which
 is the `prefill : decode` row doing the thing it exists to do.
 
 ## Proposed / backlog

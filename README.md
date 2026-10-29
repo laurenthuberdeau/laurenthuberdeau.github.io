@@ -77,8 +77,13 @@ generating against it — editable by table or by dragging points on the chart. 
 charged in 512 token blocks so the curve is integrated rather than sampled once, which also
 happens to be how engines chunk it.
 
-Tokens are counted as whitespace-separated words, which over-counts English prose slightly
-against a real BPE tokenizer and under-counts code. Tool results too large to embed carry an
+Tokens are counted by splitting text where an engine would, and then in fives. Every punctuation or
+symbol character is its own token (`foo-bar` is `foo`, `-`, `bar`; `"foo"` is `"`, `foo`, `"`) and a
+run of digits splits off from the letters around it (`port8080` is `port`, `8080`); whatever piece is
+left longer than five characters is cut into fives, so `the` is one token, `compaction` two and
+`invalidates` three. That is an approximation of a BPE tokenizer — a real one splits on learned
+merges rather than at a fixed five — but it prices a long JSON blob and a shell one-liner
+differently, which one token per word could not. Tool results too large to embed carry an
 explicit `simTokens` inflation, and are shown as an elided preview that still counts in
 context.
 
@@ -94,7 +99,7 @@ It is billed as any other generated token: it costs decode time, and it stays in
 it is re-read on every later turn the way a harness that echoes thinking blocks back re-reads it.
 The re-read is the small part — prefill runs thirty times faster than decode at the defaults, and
 the cache usually skips it — so the price of a trace is mostly the seconds it spent being written.
-A 101 token trace on `long-log` adds 2.5s to a 177s run with the cache on and 3.0s with it off.
+A 138 token trace on `long-log` adds 3.4s to a 188s run with the cache on and 4.1s with it off.
 
 The `audit` corpus is the case where that is the whole story: three quarters of what the model
 generates is reasoning, so the run spends most of its wall time streaming text the transcript
@@ -119,13 +124,13 @@ runs one of these mid-way; the transcript shows the harness step (`context compa
 drop — and the cache rebuild — is visible at a glance.
 
 The difference is most visible on the turns that follow something small. Request four of
-`long-log` arrives after a two line diff, so it prefills 50 tokens in 55 ms, where an
-uncached engine would still be re-reading 55k tokens for 49 seconds. Request six prefills 8k
-tokens in 13.3 s against 147.4 s cold, and the session as a whole is 177 s rather than 455 s.
+`long-log` arrives after a two line diff, so it prefills 138 tokens in 155 ms, where an
+uncached engine would still be re-reading 56k tokens for 50 seconds. Request six prefills 8k
+tokens in 13.4 s against 149.2 s cold, and the session as a whole is 188 s rather than 470 s.
 
 What caching does *not* rescue is throughput. The fresh chunk still attends to the whole
 history, so it pays the curve wherever the session has reached: effective prefill falls from
-1398 tok/s on the first request to 600 on the last, and decode from 43 tok/s to 19. Caching
+1386 tok/s on the first request to 598 on the last, and decode from 43 tok/s to 19. Caching
 skips work on the part of the prompt the engine has already ingested; the curve taxes the new
 tokens by how much history they have to attend to.
 
@@ -147,8 +152,8 @@ corpus:
 
 | card | loads | at the shipped profile |
 |------|-------|------------------------|
-| **decode-heavy** | `greenfield · small context` | `0.5 in : 1 out` — a chat-shaped turn, small prompt and long answer, ~14 s of run |
-| **prefill-heavy** | `long-log · context blowout` | `9.8 in : 1 out` — a wall of context re-read every turn to produce a paragraph, ~3 m |
+| **decode-heavy** | `greenfield · small context` | `0.38 in : 1 out` — a chat-shaped turn, small prompt and long answer, ~19 s of run |
+| **prefill-heavy** | `long-log · context blowout` | `6.2 in : 1 out` — a wall of context re-read every turn to produce a paragraph, ~3 m |
 
 Both are *measured* when the panel opens, at whatever the sliders say, the same way the picker
 measures its rows — the card quotes the run you would get, not a profile it was authored against.
@@ -242,14 +247,14 @@ shows every call it made.
 
 The **session summary is the first card in the
 panel**, because it is the thing you come back to after every settings change: it leads with
-`total` and `prefill : decode` — the split between the two faces of inference, `9.8 : 1` for
-`long-log`, `0.49 : 1` for `doc` — then the phases, the context, and what the prompt cache
-avoided. Three rows share one shape, `125k tok (2m 27s)`, so the card reads as columns:
+`total` and `prefill : decode` — the split between the two faces of inference, `6.2 : 1` for
+`long-log`, `0.27 : 1` for `doc` — then the phases, the context, and what the prompt cache
+avoided. Three rows share one shape, `126k tok (2m 28s)`, so the card reads as columns:
 
 ```
-prefill             125k tok (2m 27s)
-prefill (cached)    284k tok (4m 37s)
-decode              426 tok (15.00s)
+prefill             126k tok (2m 28s)
+prefill (cached)    285k tok (4m 42s)
+decode              677 tok (24.05s)
 ```
 
 The **requests history is the second card**, directly under the summary rather than at the far
@@ -275,7 +280,7 @@ on hover, and takes the pointer.
 `prefill` is what the engine had to ingest and `prefill (cached)` what it did not, sitting
 under the cost it answers rather than at the end of the card where it would be read long after
 the reader stopped looking at the prompt. The `(cached)` row belongs to the cache, so with the
-toggle off it is gone and `prefill` becomes the whole prompt — `409k tok (7m 5s)` for the same
+toggle off it is gone and `prefill` becomes the whole prompt — `411k tok (7m 11s)` for the same
 `long-log` run, the two rows above added back together. That is why the toggle does not get a
 row of its own any more: those rows show the state, where the old `prompt cache: on · instant
 reads` line only restated the switch above. Each row pairs its tokens with its time, so the two
