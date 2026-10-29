@@ -121,7 +121,7 @@ drop — and the cache rebuild — is visible at a glance.
 The difference is most visible on the turns that follow something small. Request four of
 `long-log` arrives after a two line diff, so it prefills 50 tokens in 55 ms, where an
 uncached engine would still be re-reading 55k tokens for 49 seconds. Request six prefills 8k
-tokens in 13.3 s against 147.4 s cold, and the session as a whole is 175 s rather than 452 s.
+tokens in 13.3 s against 147.4 s cold, and the session as a whole is 177 s rather than 455 s.
 
 What caching does *not* rescue is throughput. The fresh chunk still attends to the whole
 history, so it pays the curve wherever the session has reached: effective prefill falls from
@@ -166,19 +166,20 @@ takes that phase's colour — heading, a stripe down its left edge, and a wash t
 phase itself progresses — and carries the numbers for it: `prefill · req #4 · 5.9k / 12k tok
 ingested · 118k reused @ 1.4k tok/s`. Four boxes, one per phase, would have been mostly idle
 space, so the phase that is not running simply is not shown. The times between phases get the
-same rectangle with the neutral treatment: a *turn gap* is the harness round trip, which belongs
-to neither the engine nor the tool, and before you press run and after the last token the bar
+same rectangle with the neutral treatment: the bar reads *harness overhead* for the time the
+harness spends between turns, which belongs to neither the engine nor the tool, and before you press
+run and after the last token the bar
 reads `idle` and `run complete` rather than pretending something is still streaming.
 
 **Click it to step.** The bar jumps the playhead across a phase boundary — `click` forward to the
 next one, `shift-click` back to the one before the phase you are in — and its right-hand hint names
 where a click lands (`→ prefill · 8.62s`, or `→ end of run` when there is nothing left). It lands
 on the same boundaries the seek bar is painted from, so it walks the run band by band: queue,
-prefill, decode, tool exec, the gap after it, the next request. Every step leaves the phase the bar
+prefill, decode, tool exec, the harness overhead after it, the next request. Every step leaves the phase the bar
 is naming, because a boundary belongs to the band that starts there: standing on the start of the
 band you are already inside would leave the heading, the colour and the wash untouched, and the
 control would look dead — which is what a step back used to do from inside any band shorter than
-its own threshold, that is from every queue wait and every turn gap, on every click. That is how you
+its own threshold, that is from every queue wait and every stretch of harness overhead, on every click. That is how you
 compare one prefill against the next without trying to hit the edge of a band with the pointer; the
 seek bar itself still scrubs freely by click or drag.
 
@@ -242,7 +243,7 @@ shows every call it made.
 The **session summary is the first card in the
 panel**, because it is the thing you come back to after every settings change: it leads with
 `total` and `prefill : decode` — the split between the two faces of inference, `9.8 : 1` for
-`long-log`, `0.54 : 1` for `doc` — then the phases, the context, and what the prompt cache
+`long-log`, `0.49 : 1` for `doc` — then the phases, the context, and what the prompt cache
 avoided. Three rows share one shape, `125k tok (2m 27s)`, so the card reads as columns:
 
 ```
@@ -282,10 +283,10 @@ reads` line only restated the switch above. Each row pairs its tokens with its t
 remember. The split is measured from the timeline, so it always describes the run on screen.
 Every row has a hover note — the cursor goes to `help` over the card — because the panel is where these
 definitions live: which tokens each rate counts, what the cache does and does not make free, and
-why the phases need the turn gaps to add up to the clock. Then the panel holds the engine
+why the phases need the harness overhead to add up to the clock. Then the panel holds the engine
 card, which **opens** with the preset row — a machine as prefill, decode and request latency — and
-then the two speeds, the prompt cache toggle, and contention (the
-request wait) as a group under the same heading. The presets lead the card because picking a machine
+then the two speeds, the prompt cache toggle, contention (the
+request wait) as a group under the same heading, and the decay curve as a third such group. The presets lead the card because picking a machine
 is what the card is for, and a shortcut sitting below the three sliders it moves is one you find only
 after you have already hunted them. It is a group heading and buttons in the same idiom as
 `contention`, and the pressed button is a read-out rather than a stamp: it marks
@@ -293,7 +294,9 @@ the machine all three of its fields still sit on, so a slider moved afterwards l
 The labels are names alone — `local`, `API`, `API (fast)`, `ASIC` — four equal quarters of the 372px
 panel on one line, each button two lines tall so the longest name wraps inside its column rather than
 widening it,
-and what each one sets is on its hover note, where the page puts anything needing a unit. Every control in it carries a **hover note of its own**, the same way the
+and what each one is — the kind of machine, in words — is on its hover note, while the three numbers it
+writes stay in the fields below the row, where a number carries a unit and can be edited. Every control
+in it carries a **hover note of its own**, the same way the
 summary rows do — one note per row, on the row itself, so the name, the field, the unit and the
 slider all answer the same hover by inheritance. The name is a caption rather than a label
 pointing at the control, because a browser suppresses the title tooltip on exactly that element,
@@ -309,8 +312,22 @@ grows" — and the two are deliberately free to phrase things differently. One d
 mechanism for the whole page — native, on
 hover, `help` cursor to say it is there — rather than a bubble of the page's own that only half
 the surface uses. The line under the controls stays what it always was: `TTFT ≈ queue + prefill +
-decode 1 token`, with its own note on the terms. After the engine card comes the decay curve,
-which closes the panel. In the requests history, the
+decode 1 token`, with its own note on the terms. The decay curve then closes that same card, as a
+group in `contention`'s idiom rather than the card after the one it has to be read against — it is not
+a setting beside the two speeds but the shape of both of them, each being a rate *at a point on this
+curve* — and it opens the same way: `flat`, `gentle`, `steep` and `cliff` as four equal
+columns above the chart they redraw, then the chart, then the points table, then **`+ point`** spanning
+the row under the table — an action on the table rather than a preset, so it is not in the row with the
+four. Both rows take their equal columns from one `.presets` rule; only the engine row is two lines
+deep, because only its labels need the second. What a curve name does not spend on a second line it
+spends on a hover note of its own, the same one line of prose the engine names carry: what the shape
+does to a run, then the numbers it turns on, in the units the axis under them prints — taken from the
+same entry of `CURVES` as the points, so a name and the shape it loads cannot be edited apart. What a
+preset *writes* is a fact about the row rather than about one of its four options, so each row says it
+once on the caption above the buttons and no button repeats it. Both are read-outs too: the shipped curve is a named
+preset — `steep` — and the card opens with that one marked, because the row marks a preset only while
+the curve is still point for point that preset, so dragging a point, typing one or pressing
+**`+ point`** leaves none marked until a preset is pressed again. In the requests history, the
 `prefilled` column shows how many prompt tokens that request actually had to ingest. Curve table cells commit
 when the field loses focus, or on `enter`; `escape` puts the old number back. Nothing plays
 itself unless it is asked to: the page loads parked, and any change to a session setting —
@@ -321,14 +338,14 @@ settings in this sense and do not pause, so `autoplay=1` governs the page load o
 
 The seek bar is the timeline drawn to scale rather than a progress fill: one band per phase
 run, in that phase's colour — queue white, prefill amber, decode green, tool
-exec purple, turn gaps neutral — dimmed ahead of the playhead and full strength behind it,
+exec purple, harness overhead neutral — dimmed ahead of the playhead and full strength behind it,
 the playhead itself taking the colour of the phase it sits in, the same encoding the phase bar
 above wears. Queue gets the absence of
 colour because nothing happens to your prompt while it waits for a slot, and prefill the
 amber because at bar height blue prefill sat too close to green decode to tell apart; the
 light theme inverts white queue to a dark neutral, white on white being no band at all.
-Bands are sized by duration, so an 85 s prefill on a 175 s run claims just under half the bar
-and the bar shows where a run actually goes; hover a band for its phase, request number, and
+Bands are sized by duration, so the 147 s of prefill in a 177 s `long-log` run claims four
+fifths of the bar and the bar shows where a run actually goes; hover a band for its phase, request number, and
 own duration.
 
 ## Engine presets
@@ -340,7 +357,7 @@ writes **prefill, decode and request latency**, in tok/s and ms:
 
 | preset      | prefill | decode | request latency | reads as                                          |
 |-------------|---------|--------|-----------------|---------------------------------------------------|
-| `local`     | 500     | 50     | 100 ms          | a model on your own hardware                       |
+| `local`     | 1500    | 50     | 300 ms          | a model on your own hardware, the one the page ships on |
 | `API`       | 10k     | 75     | 3 s             | a hosted frontier API — fast reads, a round trip on every request |
 | `API (fast)`| 10k     | 250    | 1 s             | the fast API tier, a DeepSeek V4 Flash class model — fast reads and a much faster stream |
 | `ASIC`      | 20k     | 10k    | 500 ms          | fixed-weight inference silicon, where the run becomes tool-bound |
@@ -363,7 +380,7 @@ without knowing a preset was ever touched.
 | `cache`               | prompt cache, `1` on (default) or `0` off            |
 | `latency`             | queue wait in front of each request, in ms, `0`–`120000` |
 | `jitter`              | ± jitter on that wait in ms, `0`–`60000`, drawn from a fixed seed  |
-| `curve`               | `flat`, `gentle`, `steep`, `cliff`, or `ctx:mult` points such as `0:100,32000:60` |
+| `curve`               | `flat`, `gentle`, `steep` (default), `cliff`, or `ctx:mult` points such as `0:100,32000:60` |
 | `speed`               | playback speed `0.25`–`16`                           |
 | `autoplay`            | `1` to play on load — parked at zero by default, and switching scenario always pauses   |
 | `intro`               | `1` (default) to open the guide on load, `0` to leave it down — `autoplay=1` also leaves it down |
@@ -386,9 +403,16 @@ handlers. A preset is the one place the panel can put a number in the model that
 for, so every button is clicked and its three settings read back twice — from the model and from the
 field the reader sees — while the jitter, the cache and the curve are compared before and after to
 prove a preset touches only what it names. The label is the machine's name alone, so the hover note
-is the only place the page tells a reader what a button sets: that hand-written prose is read back —
-"10k tok/s prefill", "3s request latency" — and held to the values behind the button, because a note
-that drifted is a machine the panel promises and the run does not deliver. The row is also held to
+is the only place the page tells a reader what kind of machine a button is: any figure that note quotes
+is read back — "10k tok/s prefill", "3s request latency" — and held to the values behind the button,
+since a note quoting the wrong speed is a machine the panel promises and the run does not deliver, while
+a note that quotes no figures at all is left to its prose. The curve row is held the
+same way: every number a curve note states has to be a point that curve draws — a note may name fewer
+points than the curve has, never one it has lost — and each row's claim about what its preset writes is
+tested by clicking all four and reading back every field they do not own. That claim is also held to
+its place, on the caption of its row and nowhere else, since eight buttons ending in the same clause is
+one sentence said eight times. The two rows share one length ceiling as well, so a preset added later
+is written to the same length as the ones beside it rather than growing the paragraph back. The row is also held to
 the width the CSS gives it — four equal columns of the fixed panel, each label fitting two lines of its
 column and no word longer than one — and to the card's order, so the presets stay
 at its head; and the pressed state has to let go the moment a field stops matching it.

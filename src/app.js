@@ -73,11 +73,23 @@ function effRate(base, pts, x) {
 }
 
 /* ------------------------------- config --------------------------------- */
+/* The four named curves, each holding the points it draws and the note that says what its shape does
+   to a run. Both live in one entry for the same reason PROFILES holds a machine's name, its three
+   values and its note together: the label is one short word — four of them share a line inside a
+   372px panel — so the hover note is the only place the page can say what pressing the button makes
+   true, and a note written somewhere else is a note that can drift from the shape it describes. One
+   line of prose, then the numbers the shape turns on, in the k-form `fmtTok` puts on the axis under
+   the chart. The harness holds every number in a note to the points it belongs to: a note may name
+   fewer points than the curve has, but not one the curve does not have. */
 const CURVES = {
-  flat:   [[0, 100]],
-  gentle: [[0, 100], [64000, 88], [200000, 72]],
-  steep:  [[0, 100], [16000, 82], [64000, 55], [160000, 30], [256000, 18]],
-  cliff:  [[0, 100], [96000, 96], [100000, 38], [256000, 22]]
+  flat:   { pts: [[0, 100]],
+            note: 'No decay: both speeds stay constant for the whole session.' },
+  gentle: { pts: [[0, 100], [64000, 90], [200000, 75]],
+            note: 'Throughput degrades slowly, so the session is a little slower at the end. 100% at 0, 75% at 200k.' },
+  steep:  { pts: [[0, 100], [16000, 80], [64000, 55], [160000, 30], [256000, 20]],
+            note: 'Throughput degrades quickly over the session, so the session is significantly slower at the end. 100% at 0, 20% at 256k.' },
+  cliff:  { pts: [[0, 100], [96000, 95], [100000, 40], [256000, 20]],
+            note: 'Throughput degrades slowly, then falls off a cliff, so the session is fast until 100k tokens and then slows down.' }
 };
 /* Named engine profiles — prefill, decode and the request wait together — for the machines people
    actually run a session against: a model on your own hardware, a hosted frontier API, a faster API
@@ -94,32 +106,41 @@ const CURVES = {
    the number it names; the selftest clicks each one and reads it back. */
 const PROFILES = {
   local: {
-    name: 'local', prefill: 500, decode: 50, latency: 100,
-    note: 'A model on your own hardware: the prompt is ingested at a few hundred tok/s, so a long context decides how long you wait for the first token, and there is almost no round trip in front of it. 500 tok/s prefill, 50 tok/s decode, 100ms request latency.'
+    name: 'local', prefill: 1500, decode: 50, latency: 300,
+    note: 'A model on your own hardware: slow prefill and acceptable decode with low request latency.'
   },
-  api: {
+  API: {
     name: 'API', prefill: 10000, decode: 75, latency: 3000,
-    note: 'A hosted frontier API: the prompt is ingested so fast that prefill stops dominating and the wait becomes decode — but you pay the round trip and the scheduler ahead of every one of those requests. 10k tok/s prefill, 75 tok/s decode, 3s request latency.'
+    note: 'A hosted frontier API: fast prefill and slow decode with high request latency.'
   },
-  apifast: {
+  APIfast: {
     name: 'API (fast)', prefill: 10000, decode: 250, latency: 1000,
-    note: 'The fast API tier — a DeepSeek V4 Flash class model: reads the prompt as fast as the frontier API, generates a few times faster, and answers sooner. 10k tok/s prefill, 250 tok/s decode, 1s request latency.'
+    note: 'The fast API tier, faster prefill and decode, and lower request latency.'
   },
-  asic: {
+  ASIC: {
     name: 'ASIC', prefill: 20000, decode: 10000, latency: 500,
-    note: 'Fixed-weight inference silicon: the weights live on the chip, so generation runs close to the rate the prompt is read at and the run becomes tool-bound. 20k tok/s prefill, 10k tok/s decode, 500ms request latency.'
+    note: 'Fixed-weight inference silicon: very fast prefill and decode with low request latency.'
   }
 };
 const SPEEDS = [0.25, 0.5, 1, 2, 4, 8, 16];
 /* fixed so that a link replays identically, without an option for it */
 const JITTER_SEED = 1337;
 const DEFAULTS = {
-  session: 'long-log', prefill: 1500, decode: 50, latency: 300, jitter: 250,
+  session: 'long-log',
+  /* the shipped engine is one of the named profiles rather than three numbers beside it, so a page
+     opened without a link arrives on a machine the row can name: the preset row marks a profile only
+     while all three fields sit on it, and here they do. Jitter, the cache and the decay curve are not
+     part of a profile — they belong to the deployment — so they keep defaults of their own. */
+  prefill: PROFILES.local.prefill, decode: PROFILES.local.decode, latency: PROFILES.local.latency,
+  jitter: 250,
   cache: 1,
+  /* the shipped curve is a named preset rather than a hand-tuned list, so the page opens with that
+     preset marked as current — the curve row reads the curve, it does not remember a click */
+  curve: 'steep',
   /* the page opens parked: the run is something you start rather than something that starts
      at you. `autoplay=1` is the opt-in for a page that plays itself, and a link copied from a
      page that was playing carries it, so a shared run still replays on its own */
-  speed: 1, curve: 'steep', autoplay: 0,
+  speed: 1, autoplay: 0,
   /* and it opens on the guide, which is the one place the page explains itself. `intro=0` is the
      opt-out a link can carry, for a run sent to somebody who has already read it */
   intro: 1
@@ -196,8 +217,8 @@ function parseCurve(raw, fallback) {
 /* a named preset, or an explicit `ctx:mult` list; anything else falls back to the
    default preset */
 function resolveCurve(raw) {
-  if (raw && CURVES[raw]) return mkPts(CURVES[raw]);
-  return parseCurve(raw, CURVES[DEFAULTS.curve]);
+  if (raw && CURVES[raw]) return mkPts(CURVES[raw].pts);
+  return parseCurve(raw, CURVES[DEFAULTS.curve].pts);
 }
 function readSpeed() {
   const v = qnum('speed', DEFAULTS.speed);
@@ -266,15 +287,16 @@ function prefillTokensAt(from, to, pts, base, elapsed) {
   return to;
 }
 
-/* small inter-turn gaps (message round-trip feel) that belong to no phase but
-   still elapse; surfaced in the summary so the accounting sums to duration */
+/* The harness's own overhead between turns — the prompt assembled, the next request dispatched.
+   They belong to no phase but still elapse, so they are summed into the summary to make the
+   accounting reach the duration the clock shows, and drawn as their own band for the same reason. */
 const GAP_USER_MS = 150, GAP_TOOL_MS = 120;
 
 /* The bar under the topbar drawn to scale: TL.items reduced to one band per phase
    run, edge to edge over [0, duration]. Reads the same latencyStart / prefillStart
    / decodeStart / end fields phaseAt reads, so the coloured bands and the phase bar
-   cannot disagree about where a phase is. Time that belongs to no phase — the
-   inter-turn gaps, and anything before the first event — is its own 'gap' band so
+   cannot disagree about where a phase is. Time that belongs to no phase — the harness overhead, and
+   anything before the first event — is its own 'gap' band so
    the bands always sum to the duration the clock shows. Zero-length runs (no queue
    wait, an empty completion) drop out rather than steal a pixel from their
    neighbours. */
@@ -621,7 +643,7 @@ function setPhase(phase, text, frac) {
 /* band titles carry the phase and its own duration, so hovering the bar reads as
    a legend for the run rather than a strip of decorative colour */
 const PHASE_NAME = { queue: 'queue', prefill: 'prefill', decode: 'decode', tool: 'tool exec',
-                     gap: 'turn gap', idle: 'idle', done: 'run complete' };
+                     gap: 'harness overhead', idle: 'idle', done: 'run complete' };
 
 /* Both strips hold the whole timeline and only differ by the clip, so the bands
    are laid out once per rebuild and a frame costs one style write. */
@@ -843,10 +865,10 @@ function render(t) {
   const p = t <= 1e-9 || t >= TL.duration - 1e-9 ? null : phaseAt(t);
   if (!p) {
     /* phaseAt is null both between phases and outside the run, so the band list says
-       which: a gap band is harness round-trip time, anything else is before or after */
+       which: a gap band is harness overhead, anything else is before or after */
     const g = t >= TL.duration - 1e-9 || t <= 1e-9 ? null
       : TL.segments.find((s) => s.phase === 'gap' && t >= s.from && t < s.to);
-    if (g) setPhase('gap', fmtDur(g.to - g.from) + ' round trip · no inference, no tool running',
+    if (g) setPhase('gap', fmtDur(g.to - g.from) + ' · no inference, no tool running',
                     (t - g.from) / Math.max(1e-9, g.to - g.from));
     else if (t >= TL.duration - 1e-9) setPhase('done', TL.stats.requests + ' requests · ' +
       fmtTok(TL.stats.outTokens) + ' tok out · ' + fmtDur(TL.duration) + ' total', 1);
@@ -992,7 +1014,7 @@ function rebuild() {
    hover note; the two cache-dependent notes are built from the same table */
 function tipsFor(cache) {
   return {
-    total: 'Wall time of the run: queue + prefill + decode + tool exec + turn gaps.',
+    total: 'Wall time of the run: queue + prefill + decode + tool exec + harness overhead.',
     split: 'Ratio between prefill and decode time. 1 : 1 means one second of prompt processing '
          + 'for every second of decoding.',
     prefill: 'Prompt tokens the engine had to process, and the total time it took, at prefill '
@@ -1005,14 +1027,10 @@ function tipsFor(cache) {
             : ''),
     tool: 'Time spent in the harness executing tools. Does not involve the engine, but is part '
         + 'of the total wall time.',
-    queue: 'Per-request scheduler wait: latency ± jitter, drawn from a fixed seed so a shared '
-         + 'link replays identically. Paid once per request, before prefill.',
-    gaps: 'Round trips between turns that belong to no phase: 150 ms after a user message, '
-        + '120 ms after a tool result. They are the reason the four phases alone do not add up '
-          + 'to the clock; with the gaps the sum is exact.',
-    requests: 'Number of steps taken by the harness. Each step is one prefill followed by one '
-            + 'decode, and may include a tool call. The harness pays queue, prefill and decode '
-              + 'in that order; a tool call is part of the request that made it.',
+    queue: 'Network and scheduler latency (latency ± jitter): time before a request is processed by the engine.',
+    gaps: 'What the harness spends between turns: 150 ms before a user message, 120 ms after a '
+        + 'tool result.',
+    requests: 'Number of steps taken by the harness.',
     peak: 'The largest prompt of the session, reached before the harness compacted the history '
         + 'away. Context only ever shrinks at a compaction.',
     compactions: 'When the context is too large for the engine to handle, the harness compacts '
@@ -1043,7 +1061,7 @@ function updateSummary() {
     ['decode', fmtTok(s.outTokens) + ' tok (' + fmtDur(s.decodeMs / 1000) + ')', 0, TIPS.decode],
     ['tool exec', fmtDur(s.toolMs / 1000), 0, TIPS.tool],
     ['queue wait', fmtDur(s.queueMs / 1000), 0, TIPS.queue],
-    ['turn gaps', fmtDur(s.gapMs / 1000), 0, TIPS.gaps],
+    ['harness overhead', fmtDur(s.gapMs / 1000), 0, TIPS.gaps],
     ['requests', s.requests, 0, TIPS.requests]
   ];
   if (TL.ctx < s.peakCtx) rows.push(['peak context', fmtTok(s.peakCtx) + ' tok', 0, TIPS.peak]);
@@ -1078,6 +1096,23 @@ const invX = (px, xMax) => ((px - CH.l) / (CH.w - CH.l - CH.r)) * xMax;
 const invY = (py) => (1 - (py - CH.t) / (CH.h - CH.t - CH.b)) * MULT.axis;
 const curveMax = () => Math.max(1000, config.curve[config.curve.length - 1].ctx * 1.12);
 const sortCurve = () => config.curve.sort((a, b) => a.ctx - b.ctx);
+
+/* Which preset, if any, the curve on the card actually is — the same read-out the engine presets
+   give: a preset stays current only while the curve is still exactly its points, so dragging a point,
+   typing one or adding one leaves the row unmarked rather than claiming a shape it no longer draws.
+   Driven from drawCurve because every path that changes the curve passes through it — a rebuild, a
+   preset button, a table commit, `+ point`, the drag itself — so there is no path that can redraw the
+   chart and leave the row behind. The default curve is DEFAULTS.curve, resolved through CURVES, so a
+   page opened with no `curve` in the link arrives with that preset marked. */
+const CURVE_BTNS = document.querySelectorAll('[data-curve]');
+const isCurve = (name) => {
+  const c = CURVES[name] && CURVES[name].pts;
+  return !!c && c.length === config.curve.length
+    && c.every((p, i) => config.curve[i].ctx === p[0] && config.curve[i].mult === p[1]);
+};
+const syncCurvePresets = () => {
+  for (const b of CURVE_BTNS) b.setAttribute('aria-current', String(isCurve(b.dataset.curve)));
+};
 
 function drawCurve() {
   const svg = $('#curveChart');
@@ -1114,6 +1149,7 @@ function drawCurve() {
   });
   $('#curveN').textContent = String(config.curve.length);
   drawCurveTable();
+  syncCurvePresets();
 }
 
 /* Enter commits, Escape puts the stored value back; both leave the field */
@@ -1150,7 +1186,12 @@ function drawCurveTable() {
     c1.appendChild(i1);
     const c2 = document.createElement('td');
     const i2 = document.createElement('input');
-    i2.type = 'number'; i2.min = String(MULT.min); i2.max = String(MULT.max); i2.step = '5'; i2.value = String(p.mult);
+    /* A number input's arrows walk a ladder anchored on `min`, not on zero: `min="1" step="5"` put the
+       rungs at 1, 6, 11 … 96, so every press landed on a multiple of five plus one — and 96 was the top
+       rung, so 100% was unreachable by keyboard. The ladder therefore starts at 0, where the column's
+       own labels count from; the floor a curve may actually hold is MULT.min, and the commit below
+       applies it, so admitting 0 here costs nothing. */
+    i2.type = 'number'; i2.min = '0'; i2.max = String(MULT.max); i2.step = '5'; i2.value = String(p.mult);
     i2.style.width = '62px';
     i2.addEventListener('change', () => {
       p.mult = normMult(i2.value);
@@ -1209,28 +1250,32 @@ function drawCurveTable() {
   svg.addEventListener('pointerleave', () => { if (!captured) stop(); });
 })();
 
+/* A new point extends the curve to the right rather than filling a gap in it: the question an edit to
+   a decay curve usually asks is "and what if it falls away out at 300k", which no midpoint between two
+   points already there can pose. The step is a fraction of the width the curve already spans — one
+   point's worth, max/N — so the additions space themselves out as the curve widens instead of crawling
+   right one notch at a time, which on a 256k axis would be invisible. A curve with nothing past ctx 0
+   (`flat`) has no width to take a fraction of, so the floor is one quantisation step: a point landed on
+   top of the one it extends would make a zero-width segment and wedge the editor. */
 $('#addPoint').addEventListener('click', () => {
   const pts = config.curve;
-  let gap = -1, at = pts.length - 1;
-  for (let i = 1; i < pts.length; i++) {
-    const g = pts[i].ctx - pts[i - 1].ctx;
-    if (g > gap) { gap = g; at = i - 1; }
-  }
-  const a = pts[at], b = pts[at + 1];
-  if (b) {
-    /* only insert between two points when there is real room; a zero/duplicate
-       gap would add another coincident point and deadlock the editor */
-    const mid = Math.round((a.ctx + b.ctx) / 2 / CTX_STEP) * CTX_STEP;
-    if (mid <= a.ctx || mid >= b.ctx) return;
-    pts.push({ ctx: mid, mult: Math.round((a.mult + b.mult) / 2) });
-  } else {
-    pts.push({ ctx: normCtx(a.ctx) + CTX_STEP * 32, mult: Math.max(MULT.min, a.mult - 20) });
-  }
+  const last = pts[pts.length - 1];
+  pts.push({
+    ctx: Math.max(normCtx(last.ctx + last.ctx / pts.length), normCtx(last.ctx) + CTX_STEP),
+    mult: Math.max(MULT.min, last.mult - 20)
+  });
   sortCurve(); rebuild();
 });
 
+/* The label is one word, so a button's hover note is the whole of what it means, taken from the entry
+   in CURVES that also holds the points — which is what lets the harness hold the note's numbers to the
+   curve. Nothing else is appended. What a preset writes is a fact about the row rather than about one
+   of its four options, so it is said once, on the caption over the row, exactly where the engine row
+   says the same for its three fields; a trailer on each button is four sentences the reader has
+   already read, appended to the one line they came for. */
 for (const b of document.querySelectorAll('[data-curve]')) {
-  b.addEventListener('click', () => { config.curve = mkPts(CURVES[b.dataset.curve]); rebuild(); });
+  b.title = CURVES[b.dataset.curve].note;
+  b.addEventListener('click', () => { config.curve = mkPts(CURVES[b.dataset.curve].pts); rebuild(); });
 }
 
 /* ------------------------------ settings UI ----------------------------- */
@@ -1248,9 +1293,10 @@ const fromRange = (p, r) => {
    found only by someone who has already hunted them. Built here from PROFILES so the label, the note
    under it and the values written cannot drift apart; the markup holds the heading and the row.
 
-   The label is only the name — four of them share one line inside a 372px panel — and the three
-   numbers each one sets are on the hover note, where the page puts anything that needs a unit and a
-   sentence to be understood.
+   The label is only the name — four of them share one line inside a 372px panel — and the hover note
+   says what kind of machine it is. The three numbers each one writes stay in the fields under the row,
+   where a number has a unit beside it and can be edited; the note names the machine rather than
+   reciting it, and the pressed state is what ties the name to the three fields it moved.
 
    The button carries `aria-current` while the fields sit exactly on it, so the row answers "am I on
    that machine right now" rather than "was this button pressed once" — move a slider and the pressed
@@ -1260,7 +1306,7 @@ for (const id of Object.keys(PROFILES)) {
   const p = PROFILES[id];
   const b = el('button', null, p.name);
   b.dataset.profile = id;
-  b.title = p.note + ' Writes these three settings only — the decay curve, the jitter and the prompt cache stay as they are.';
+  b.title = p.note;
   b.addEventListener('click', () => {
     /* clamped rather than trusted, so a profile outside the bounds can never put a number in the
        model that a link could not have carried; the selftest reads each one back unclamped */
@@ -1621,7 +1667,7 @@ function stepPhase(dir) {
        playhead says, and what phaseAt agrees with — so the start of the band you are standing
        in is not the previous phase, it is this one at zero progress. Landing there is what
        made a step back look dead: the heading, the colour and the wash all stayed where they
-       were, and since a queue wait or a turn gap is shorter than any fixed "close enough to
+       were, and since a queue wait or a stretch of harness overhead is shorter than any fixed "close enough to
        the boundary" threshold, from inside one it happened on every single click. So stepping
        back clears the whole band it leaves and lands on the first instant of the phase before
        the one the bar is naming. */
@@ -1734,7 +1780,7 @@ rebuild();
 if (config.autoplay) play(); else { updatePlayBtn(); render(vTime); }
 /* the console and the selftest both want to know where the playhead actually is, as
    opposed to what the clock says after formatting */
-window.AS = { config, sessions: SESSIONS, profiles: PROFILES, scenarioStats,
+window.AS = { config, sessions: SESSIONS, profiles: PROFILES, curves: CURVES, scenarioStats,
               get tl() { return TL; }, get vTime() { return vTime; }, get playing() { return playing; },
               rebuild, seek, play, pause, phaseAt, render, stepPhase, selectSession: selectScenario,
               openPicker, closePicker, openIntro, closeIntro,

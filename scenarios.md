@@ -64,7 +64,7 @@ already covers, not re-tread one.
 - **Cache interaction** — tiny fresh chunks (`sweep`, `doc`) vs. cache-busting events
   (compaction in `deep-fix`), vs. cold re-prefill of huge dumps (`long-log`, `repro`).
 - **Phase dominance** — read it off the summary's `prefill : decode` row: prefill-heavy
-  `long-log` 12:1, balanced `sweep` 1.2:1, decode-heavy `doc` 0.54:1, hidden-decode `audit`
+  `long-log` 9.8:1, balanced `sweep` 1.1:1, decode-heavy `doc` 0.49:1, hidden-decode `audit`
   0.25:1, and tool-bound `migration` where neither phase is the story at all. Contention is a
   slider, not a corpus, but per-request latency is most visible on `sweep`, which has the most
   requests.
@@ -84,8 +84,8 @@ fails if `session.split` and the corpus's own measurement disagree. It is a char
 a prediction: change the engine speeds or the curve and the live split moves, which is why the
 summary row repeats the reference value whenever you are off the default profile.
 
-The extremes are the point. `long-log` at 12:1 spends eleven seconds reading for every second
-of writing; `doc` at 0.54:1 is the opposite shape; `migration` sits at 0.80:1 while spending two
+The extremes are the point. `long-log` at 9.8:1 spends ten seconds reading for every second
+of writing; `doc` at 0.49:1 is the opposite shape; `migration` sits at 0.73:1 while spending two
 thirds of its wall time inside one `CREATE INDEX`, which is the reminder that the ratio is not
 the whole story either.
 
@@ -96,16 +96,16 @@ that scenario at the default profile, not a label anyone maintains by hand.
 
 | id | name | boot | requests | tools | pf:dk | shape | demonstrates |
 |---|---|---|---|---|---|---|---|
-| `greenfield` | greenfield · small context | 6.2k | 4 | 3 | 1.0:1 | small, clean feature work | baseline prefill/decode; tiny context; cache near-irrelevant |
-| `bug-hunt` | bug hunt · medium context | 9.4k | 5 | 4 | 2.0:1 | gradual growth, mixed tools | fault-finding arc; ordering bug; medium decay |
-| `long-log` | long log · context blowout | 11.8k | 6 | 5 | 12:1 | blowout to ~126k | curve grind; cache headline (175s vs 452s cold) |
-| `deep-fix` | deep fix · harness compaction | 12.0k | 5 | 4 + 1 compact | 6.9:1 | spike to ~69k, compaction mid-run | compaction busts the prefix cache; re-prefill is flagged in the history |
-| `sweep` | batch edits · cache showcase | 5.4k | 7 | 6 | 1.2:1 | fourteen steps, mostly tiny diffs, peak ~33k | a codemod plus hand fixes; four of the seven requests prefill under 60 ms; 88s of prefill avoided |
-| `oncall` | production incident · context spike | 9.8k | 5 | 4 | 2.7:1 | one 84k dump, then tightening turns, peak ~97k | a *sharp* single-prefill spike landing on the `cliff` drop at 96k–100k; no gradual buildup |
-| `migration` | backfill · tool-bound | 8.1k | 5 | 4 | 0.80:1 | four turns, `execMs` 31s–240s, peak ~22k | the tool phase dominating wall time, 411s of it, ~7 minutes of one index build |
-| `refactor` | monolith split · steady grind | 12.5k | 6 | 5 | 2.6:1 | steady climb to ~95k, reads then edits | the typical long coding session that ends on the steepest part of the curve |
-| `doc` | api reference · decode-bound | 7.2k | 5 | 4 | 0.54:1 | two long writes, one read, peak ~25k | decode dominance; the artifact streams through tool args and generated tokens stay resident |
-| `repro` | crash repro · huge boot | 24k | 6 | 5 | 1.4:1 | a short incident over a giant repo map | request one re-prefills the boot prompt for 18.5s, more than the next four combined |
+| `greenfield` | greenfield · small context | 6.2k | 4 | 3 | 0.54:1 | small, clean feature work | baseline prefill/decode; tiny context; cache near-irrelevant |
+| `bug-hunt` | bug hunt · medium context | 9.4k | 5 | 4 | 1.6:1 | gradual growth, mixed tools | fault-finding arc; ordering bug; medium decay |
+| `long-log` | long log · context blowout | 11.8k | 6 | 5 | 9.8:1 | blowout to ~126k | curve grind; cache headline (177s vs 452s cold) |
+| `deep-fix` | deep fix · harness compaction | 12.0k | 5 | 4 + 1 compact | 4.9:1 | spike to ~69k, compaction mid-run | compaction busts the prefix cache; re-prefill is flagged in the history |
+| `sweep` | batch edits · cache showcase | 5.4k | 7 | 6 | 1.1:1 | fourteen steps, mostly tiny diffs, peak ~33k | a codemod plus hand fixes; four of the seven requests prefill under 60 ms; 88s of prefill avoided |
+| `oncall` | production incident · context spike | 9.8k | 5 | 4 | 2.5:1 | one 84k dump, then tightening turns, peak ~97k | a *sharp* single-prefill spike landing on the `cliff` drop at 96k–100k; no gradual buildup |
+| `migration` | backfill · tool-bound | 8.1k | 5 | 4 | 0.73:1 | four turns, `execMs` 31s–240s, peak ~22k | the tool phase dominating wall time, 411s of it, ~7 minutes of one index build |
+| `refactor` | monolith split · steady grind | 12.5k | 6 | 5 | 2.4:1 | steady climb to ~95k, reads then edits | the typical long coding session that ends on the steepest part of the curve |
+| `doc` | API reference · decode-bound | 7.2k | 5 | 4 | 0.49:1 | two long writes, one read, peak ~25k | decode dominance; the artifact streams through tool args and generated tokens stay resident |
+| `repro` | crash repro · huge boot | 24k | 6 | 5 | 1.3:1 | a short incident over a giant repo map | request one re-prefills the boot prompt for 18.5s, more than the next four combined |
 
 ### `deep-fix` (compaction showcase)
 

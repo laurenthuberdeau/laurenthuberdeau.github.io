@@ -127,7 +127,7 @@
   .phasebar[data-phase="prefill"] { --c: var(--prefill); }
   .phasebar[data-phase="decode"]  { --c: var(--decode); }
   .phasebar[data-phase="tool"]    { --c: var(--tool); }
-  /* the non-phases: a turn gap belongs to the harness rather than the engine, and
+  /* the non-phases: harness overhead is the harness rather than the engine, and
      idle/done have nothing running — neither gets to borrow a phase's colour */
   .phasebar[data-phase="gap"], .phasebar[data-phase="idle"], .phasebar[data-phase="done"] { --c: var(--fg-dimmer); }
 
@@ -211,10 +211,11 @@
   .row.duo .unit { width: auto; flex: 0 0 auto; }
   .row.duo .pm { flex: 0 0 auto; color: var(--fg-dimmer); }
   .hint { color: var(--fg-dimmer); font-size: 11px; }
-  /* a group inside a card. Contention is a property of the engine rather than a thing next
-     to it, so the rows that model it are set off with a rule and a caption instead of being
-     promoted to a card of their own — the caption carries the definition on hover, the way
-     the summary rows do, so the card stays a list of controls */
+  /* a group inside a card. Contention is a property of the engine rather than a thing next to it,
+     and so is the decay curve — the shape those two speeds take — so both are set off with a rule
+     and a caption instead of being promoted to a card of their own: the caption carries the
+     definition on hover, the way the summary rows do, so the card stays a list of controls, and the
+     rule between groups is what tells them apart now that the headings are gone */
   .gsub {
     margin: 10px 0 6px; padding-top: 8px; border-top: 1px solid var(--border);
     color: var(--fg-dimmer); font-size: 10px; letter-spacing: .1em; text-transform: uppercase;
@@ -249,25 +250,24 @@
   /* the engine presets double as a read-out: the pressed one is the profile the fields are on right
      now, not the last button clicked. Same accent the page uses for state, no extra colour for it. */
   .btns button[aria-current="true"] { border-color: var(--accent); background: var(--panel-2); color: var(--accent); }
-  /* The presets are a group of their own at the head of the card and the two speed rows below are
-     another, so they need a gap between them: with nothing under the buttons, the prefill field sat
-     right on top of them. Tighter than the 18px the `contention` group spends on its rule and
-     caption, because there is no heading here to breathe under. And on this row only — `.btns` is
-     also the curve card's last row, where a bottom margin would only thicken that card's padding. */
-  #profiles { flex-wrap: nowrap; margin-bottom: 12px; }
-  /* Four equal buttons, and two lines deep. Equal because these are four options rather than four
-     widths: `.btns` gives every button `flex: 1 1 auto`, which sizes them to their labels, so
-     `API (fast)` would claim more of the card than `local` and the row would read as four unrelated
-     boxes instead of one control. Each is therefore a quarter of the card and the long name wraps
-     inside its column — which is what the second line of height is for, so the wrap does not push one
-     button taller than its neighbours. `3.1em` is two lines of this row's 11px type at the body's
-     1.55 leading; the 8px is the padding (2 × 3) and border (2 × 1) every button already carries, so
-     a one-line label sits centred in exactly twice the height it needed. */
-  #profiles button {
-    flex: 1 1 0; min-width: 0; text-align: center; white-space: normal;
-    display: grid; place-items: center;
-    min-height: calc(3.1em + 8px);
-  }
+  /* Two rows of presets share one pattern: the engine profiles at the head of the engine card, and the
+     named curves at the head of the curve card. Equal columns rather than the label-width boxes
+     `.btns` gives by default, because a row of presets is one control with N options, not N buttons
+     that happen to be next to each other — and unequal widths read as unequal weight, when `gentle`
+     is no more of an option than `flat`. */
+  .presets { flex-wrap: nowrap; margin-bottom: 8px; }
+  .presets button { flex: 1 1 0; min-width: 0; text-align: center; }
+  /* The engine presets get the wider gap: they are a group of their own at the head of the card and
+     the two speed rows below are another, and with nothing under the buttons the prefill field sat
+     right on top of them. Tighter than the 18px the `contention` group spends on its rule and caption,
+     because there is no heading here to breathe under. */
+  #profiles { margin-bottom: 12px; }
+  /* …and its labels are longer than a quarter of the card, so that row is two lines deep: the long
+     name wraps inside its column rather than widening it, and no button stands taller than its
+     neighbours. `3.1em` is two lines of this row's 11px type at the body's 1.55 leading; the 8px is
+     the padding (2 × 3) and border (2 × 1) every button already carries, so a one-line label sits
+     centred in exactly twice the height it needed. */
+  #profiles button { white-space: normal; display: grid; place-items: center; min-height: calc(3.1em + 8px); }
   dl.summary { margin: 0; display: grid; grid-template-columns: 1fr auto; gap: 2px 8px; font-size: 11px; }
   dl.summary dt { color: var(--fg-dimmer); }
   dl.summary dd { margin: 0; text-align: right; color: var(--fg); font-variant-numeric: tabular-nums; }

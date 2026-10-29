@@ -61,7 +61,8 @@ class El {
 
 const cache = new Map();
 const PHASES = ['queue', 'prefill', 'decode', 'tool'];
-const PHASE_LABEL = { queue: 'queue', prefill: 'prefill', decode: 'decode', tool: 'tool exec', gap: 'turn gap' };
+const PHASE_LABEL = { queue: 'queue', prefill: 'prefill', decode: 'decode', tool: 'tool exec',
+                      gap: 'harness overhead' };
 const PHASE_STATES = [...PHASES, 'gap', 'idle', 'done'];
 const docListeners = {};
 /* ids present in the real markup. The shim resolves CSS ids against these so
@@ -174,6 +175,10 @@ ok('autoplay starts playback on load', AS.config.autoplay
    shared, since a preset writes plain settings and no `profile` parameter exists. The shipped
    defaults (1500/50/300) are deliberately none of the four, so a plain link marks nothing. */
 const PBTNS = $('#profiles').children.slice();
+/* the defaults block is read twice below — for the profile its engine settings name, and for the curve
+   and playback policy it states — so take it once, before either check needs it */
+const DEFAULTS_SRC = (src.match(/const DEFAULTS = \{[\s\S]*?\n\};/) || [''])[0];
+const DEF_PROFILE = (DEFAULTS_SRC.match(/prefill:\s*PROFILES\.(\w+)\./) || [, ''])[1];
 const pPressed = () => PBTNS.filter((b) => b.getAttribute('aria-current') === 'true')
   .map((b) => b.dataset.profile);
 const pMatch = PBTNS.filter((b) => {
@@ -181,17 +186,59 @@ const pMatch = PBTNS.filter((b) => {
   return p && AS.config.prefill === p.prefill && AS.config.decode === p.decode
     && AS.config.latency === p.latency;
 }).map((b) => b.dataset.profile);
+const pLink = /[?&](prefill|decode|latency)=/.test(location.search);
 ok('the profile the link carries is the profile the row says the page is on',
-   PBTNS.length === Object.keys(AS.profiles).length && pPressed().join() === pMatch.join(),
+   PBTNS.length === Object.keys(AS.profiles).length && pPressed().join() === pMatch.join()
+     /* and with no engine settings in the link, the page opens on the profile the defaults name: a
+        plain open arrives on a machine the row can put a word to, which is what shipping the defaults
+        as a profile rather than as three loose numbers buys. Only that case is pinned — a link that
+        carries a machine gets to mark that machine, including when it carries the default one. */
+     && (pLink || pPressed().join() === DEF_PROFILE),
    AS.config.prefill + '/' + AS.config.decode + '/' + AS.config.latency + ' → current ['
-     + pPressed().join(', ') + ']' + (pMatch.length ? ', matches ' + pMatch.join(', ') : ', matches none'));
+     + pPressed().join(', ') + ']' + (pMatch.length ? ', matches ' + pMatch.join(', ') : ', matches none')
+     + (pLink ? '' : ' · the defaults name ' + DEF_PROFILE));
 
 /* the shipped default is a parked page, so pin the default itself rather than the button: this
    harness boots with autoplay=0 in the URL either way, which is exactly the case that cannot
    tell a flipped default from the default it replaced */
-const DEFAULTS_SRC = (src.match(/const DEFAULTS = \{[\s\S]*?\n\};/) || [''])[0];
 ok('the page loads parked by default', /autoplay:\s*0\b/.test(DEFAULTS_SRC),
    (DEFAULTS_SRC.match(/autoplay:[^,\n]*/) || ['autoplay missing from DEFAULTS'])[0]);
+/* The curve the page booted with is either a named preset or it is not, and the row has to say which:
+   marked with that one, or blank. So the mark is read against the curve the page actually booted on,
+   which a link can change — and separately, when the link carries no `curve` at all, what it boots on
+   is DEFAULTS.curve, which has to be one of the four for the card to open marked at all. That second
+   half is the point: a default nudged into a fifth bespoke shape would leave the row blank on every
+   plain open, and nothing else here would notice. Nothing has touched the curve yet at this point in
+   the harness, which is what makes it a check on the boot state rather than on the last thing a test
+   did. */
+const CURVE_TAB = {};
+((src.match(/const CURVES = \{([\s\S]*?)\n\};/) || [, ''])[1]).split('\n').forEach((line) => {
+  /* one entry per curve, points first and the note under them: anchor on the `{ pts:` that opens an
+     entry, or the `note:` line beneath it reads as a fifth curve with no points of its own */
+  const m = line.match(/^\s*([A-Za-z][\w-]*):\s*\{\s*pts:\s*(.*)$/);
+  if (m) CURVE_TAB[m[1]] = (m[2].match(/\[\s*\d+\s*,\s*\d+\s*\]/g) || [])
+    .map((p) => p.match(/\d+/g).map(Number));
+});
+const isBootCurve = (name) => {
+  const c = CURVE_TAB[name] || [];
+  return c.length === AS.config.curve.length
+    && c.every((p, i) => p[0] === AS.config.curve[i].ctx && p[1] === AS.config.curve[i].mult);
+};
+const DEF_CURVE = (DEFAULTS_SRC.match(/curve:\s*'([\w-]+)'/) || [, ''])[1];
+/* …pinning the keys of DEFAULTS are unique while at it: a duplicate key is legal JavaScript, the later
+   one silently wins, and the reader comparing the two has no way to tell which the page obeys. */
+ok('DEFAULTS states each setting once',
+   ['session', 'prefill', 'decode', 'latency', 'jitter', 'cache', 'curve', 'speed', 'autoplay', 'intro']
+     .every((k) => (DEFAULTS_SRC.match(new RegExp('(^|[{,\\s])' + k + ':', 'g')) || []).length === 1),
+   (DEFAULTS_SRC.match(/\n\s*([a-z]+):/g) || []).map((s) => s.trim().replace(':', '')).join(' '));
+const cBoot = document.querySelectorAll('[data-curve]')
+  .filter((b) => b.getAttribute('aria-current') === 'true').map((b) => b.dataset.curve);
+const BOOT_MARK = Object.keys(CURVE_TAB).filter(isBootCurve).join();
+const Q_CURVE = (location.search.match(/[?&]curve=([^&]*)/) || [, ''])[1];
+ok('the curve row opens marked with the curve the page booted on',
+   cBoot.join() === BOOT_MARK && (Q_CURVE || (!!DEF_CURVE && BOOT_MARK === DEF_CURVE)),
+   'curve ' + (Q_CURVE ? 'from the link: ' + decodeURIComponent(Q_CURVE) : 'default ' + DEF_CURVE)
+     + ' → is ' + (BOOT_MARK || 'no preset') + ' · marked [' + cBoot.join(', ') + ']');
 
 /* --- the guide ---
    The page opens on it, so everything below has to step past it first: while a dialog is up the
@@ -227,7 +274,12 @@ ok('a shape is a button, not a clickable div', SHAPES().every((b) => b.tagName =
    a 500 tok/s local profile does make the decode-heavy session prefill-leaning, and the card says so
    with live numbers — holding that against the label would make the label a promise about one
    machine rather than a description of a corpus. */
-const defNum = (k) => parseFloat((DEFAULTS_SRC.match(new RegExp('\\b' + k + ':\\s*([\\d.]+)')) || [, ''])[1]);
+const defNum = (k) => {
+  /* the shipped engine defaults are a named profile rather than three numbers, so read them off the
+     page's own table: scraping DEFAULTS for a number there would scrape the word `PROFILES` */
+  const raw = (DEFAULTS_SRC.match(new RegExp('\\b' + k + ':\\s*([\\w.]+)')) || [, ''])[1];
+  return raw && raw.indexOf('PROFILES.') === 0 ? AS.profiles[raw.split('.')[1]][k] : parseFloat(raw);
+};
 const shapeRatio = (id) => {
   const live = { prefill: AS.config.prefill, decode: AS.config.decode, latency: AS.config.latency,
                  jitter: AS.config.jitter, cache: AS.config.cache };
@@ -241,6 +293,11 @@ const SHAPE_IDS = ['greenfield', 'long-log'];
 const shapeSession = (i) => (AS.sessions.find((s) => s.id === SHAPE_IDS[i]) || {}).name || 'MISSING';
 const shapeText = (i) => (AS.introShapes()[i] || { textContent: '' }).textContent;
 const rDecode = shapeRatio(SHAPE_IDS[0]), rPrefill = shapeRatio(SHAPE_IDS[1]);
+/* …and the same split for every other corpus at that same shipped profile, printed because scenarios.md
+   quotes those as measured at the default profile: move the default and that table moves with it, so
+   the figures to refresh it with come from the run rather than from somebody retyping them */
+console.log('at the shipped profile  ' + AS.sessions.map((s) => s.id + ' ' + shapeRatio(s.id).toFixed(2)
+  + ':1').join(' · '));
 ok('the two shapes are the two ends of the corpus',
    SHAPE_IDS.every((id, i) => shapeText(i).indexOf(shapeSession(i)) !== -1) &&
    rDecode < 1 && rPrefill > 2 && rPrefill > rDecode * 4,
@@ -1104,7 +1161,7 @@ ok('shift-click walks back every band start',
    phase that starts there, so stopping on the start of the band you are inside leaves the
    heading, the colour and the wash exactly as they were — which is what a step back used to do
    from inside any band shorter than its own threshold, that is from every queue wait and every
-   turn gap, on every single click */
+   stretch of harness overhead, on every single click */
 const BACKFAIL = [];
 SEGS.forEach((s, i) => {
    AS.seek(s.from + (s.to - s.from) / 2); pump();
@@ -1243,6 +1300,37 @@ $('#seek').dispatch('pointerdown', { clientX: 240 }); pump();
 $('#seek').dispatch('pointermove', { clientX: 90 });
 $('#seek').dispatch('pointerup');
 for (const b of document.querySelectorAll('[data-curve]')) { b.dispatch('click'); pump(); }
+/* The curve row is a read-out of the curve, not of the last button pressed — so after the sweep above
+   the last preset clicked is the one marked, and after `+ point` nothing is, because a curve with an
+   extra point is no one's preset. */
+const cPressed = () => document.querySelectorAll('[data-curve]')
+  .filter((b) => b.getAttribute('aria-current') === 'true').map((b) => b.dataset.curve);
+const cAfterSweep = cPressed().join();
+$('#addPoint').dispatch('click'); pump();
+ok('the curve row marks the preset the curve is, and nothing once it is edited',
+   cAfterSweep === 'cliff' && cPressed().length === 0,
+   'after the preset sweep [' + cAfterSweep + '] · after + point [' + cPressed().join(', ') + ']');
+/* …and what `+ point` actually adds: a point past the right edge, one point's worth of the width the
+   curve already spans (max/N), quantised to the same 1000-token grid the drag and the table use, so
+   the additions space themselves out instead of crawling right one notch at a time. The floor of one
+   step is what keeps `flat` — one point at ctx 0, whose fraction is 0 — from landing on the point it
+   extends, which is the one coincidence the editor cannot represent. */
+const addFrom = (pts) => {
+  AS.config.curve = pts.map(([ctx, mult]) => ({ ctx, mult }));
+  AS.rebuild(); pump();
+  const was = AS.config.curve.map((p) => p.ctx);
+  $('#addPoint').dispatch('click'); pump();
+  const got = AS.config.curve, max = was[was.length - 1];
+  const want = Math.max(Math.round((max + max / was.length) / 1000) * 1000, max + 1000);
+  const last = got[got.length - 1];
+  return { note: was.length + ' pts max ' + fmt(max) + ' → ' + (last ? fmt(last.ctx) : 'nothing'),
+           fits: got.length === was.length + 1 && !!last && last.ctx === want
+             && got.every((p, i) => !i || p.ctx > got[i - 1].ctx) };
+};
+const ADD_CASES = [addFrom([[0, 100]]), addFrom([[0, 100], [64000, 88], [200000, 72]]),
+                   addFrom([[0, 100], [16000, 82], [64000, 55], [160000, 30], [256000, 18]])];
+ok('+ point extends the curve by one point\'s worth of its own width',
+   ADD_CASES.every((c) => c.fits), ADD_CASES.map((c) => c.note).join(' · '));
 $('#addPoint').dispatch('click'); pump();
 const inputs = $('#curveTable').descendants().filter((e) => e.tagName === 'INPUT');
 if (inputs.length >= 2) {
@@ -1261,6 +1349,27 @@ if (inputs.length >= 2) {
   inputs[1].dispatch('change'); inputs[0].dispatch('change'); pump();
   ok('curve fields commit on blur', p0.ctx === 12000 && p0.mult === before - 20, p0.ctx + ':' + p0.mult);
 }
+/* --- the speed column's spin arrows -------------------------------------------------------------
+   The arrows on a number input walk a ladder anchored on `min`, so `min="1" step="5"` put the rungs at
+   1, 6, 11 … 96: each press landed on a multiple of five plus one, and 96 was the top rung, so 100% was
+   unreachable without typing it. The rungs are what the column is labelled in, so pin them — the shim
+   has no spinner to click, but a ladder whose rungs are 0, 5 … 100 is the only one that can step 5s and
+   reach the top — and separately prove that widening the widget's floor to 0 did not widen the curve's. */
+const SPIN = $('#curveTable').descendants().filter((e) => e.tagName === 'INPUT')
+  .filter((e, i) => i % 2 === 1);   /* the columns alternate: ctx, speed %, ctx, speed % … */
+const rungBad = SPIN.filter((e) => {
+  const min = Number(e.min), max = Number(e.max), step = Number(e.step);
+  return min % step !== 0 || (max - min) % step !== 0;
+}).map((e) => 'rungs from ' + e.min + ' by ' + e.step + ' never reach ' + e.max);
+const SP = SPIN[0], MULT_WAS = AS.config.curve[0].mult;
+SP.value = '0'; SP.dispatch('change'); pump();
+const floorGot = AS.config.curve[0].mult;
+SP.value = String(MULT_WAS); SP.dispatch('change'); pump();
+ok('the speed arrows step 5s from zero and still refuse a 0% point',
+   SPIN.length > 1 && rungBad.length === 0 && floorGot === 1,
+   'min ' + SP.min + ' step ' + SP.step + ' max ' + SP.max + ' → rungs ' + Number(SP.min) + ', '
+     + (Number(SP.min) + Number(SP.step)) + ' … ' + SP.max + (rungBad.length ? ' · ' + rungBad.join(', ') : '')
+     + ' · typed 0 became ' + floorGot + ', restored to ' + MULT_WAS);
 const kill = $('#curveTable').descendants().find((e) => e.tagName === 'BUTTON');
 if (kill) { kill.dispatch('click'); pump(); }
 const circles = $('#curveChart').descendants().filter((e) => e.tagName === 'CIRCLE');
@@ -1277,8 +1386,8 @@ ok('config survived handler battery', AS.config.prefill > 0 && AS.config.decode 
    A preset is the one place the panel can put a number in the model that no field was asked for, so
    every button is clicked and each of the three settings it owns is read back twice — from the model
    and from the field the reader sees — next to the three it must not touch. The label is held to the
-   values too: outside PROFILES it is the only place those numbers are written down, so a button
-   printing the wrong speed is a promise the run does not keep and nothing else would notice. */
+   note too: outside PROFILES the note is where the page says what kind of machine a button is, and any
+   figure it quotes is read against the values behind it. */
 const P_IDS = Object.keys(AS.profiles);
 const pFields = () => ({ prefill: +$('#prefill').value, decode: +$('#decode').value, latency: +$('#latency').value });
 const P_BEFORE = pFields();
@@ -1301,17 +1410,21 @@ for (const b of PBTNS) {
   if (f.prefill !== p.prefill || f.decode !== p.decode || f.latency !== p.latency)
     pBad.push(id + ' left the fields at ' + f.prefill + '/' + f.decode + '/' + f.latency);
   if (pPressed().join() !== id) pBad.push(id + ' pressed reads [' + pPressed().join(', ') + ']');
-  /* the label is the name alone, which leaves the hover note as the only place the page tells a
-     reader what a button sets — so the note is read back against the values it describes */
+  /* the label is the name alone, so the note is where the page says what kind of machine this is —
+     which makes the label's text the one thing that has to match the entry behind the button exactly */
   if (String(b.textContent).trim() !== p.name)
     pBad.push(id + ' is labelled ' + JSON.stringify(b.textContent) + ', not ' + JSON.stringify(p.name));
+  /* the note names the machine in words rather than reciting its three numbers, so a number there is
+     optional — but a wrong one is worse than none, because it is the one figure on the card the reader
+     has no field to check against. So a stated number is still held to the value behind the button. */
   const said = {
     prefill: numSaid(/([\d.]+k?) tok\/s prefill/i, b.title, kOf),
     decode: numSaid(/([\d.]+k?) tok\/s decode/i, b.title, kOf),
     latency: numSaid(/([\d.]+)(ms|s) request latency/i, b.title, (m) => (m[2] === 's' ? 1000 : 1))
   };
-  if (said.prefill !== p.prefill || said.decode !== p.decode || said.latency !== p.latency)
-    pBad.push(id + ' notes ' + [said.prefill, said.decode, said.latency].join('/') + ' but writes '
+  const drift = ['prefill', 'decode', 'latency'].filter((k) => !Number.isNaN(said[k]) && said[k] !== p[k]);
+  if (drift.length)
+    pBad.push(id + ' notes ' + drift.map((k) => said[k] + ' ' + k).join(', ') + ' but writes '
       + p.prefill + '/' + p.decode + '/' + p.latency);
 }
 ok('every engine preset sets the machine it names, in the model and in the fields',
@@ -1319,11 +1432,12 @@ ok('every engine preset sets the machine it names, in the model and in the field
    P_IDS.map((id) => id + ' ' + AS.profiles[id].prefill + '/' + AS.profiles[id].decode + '/'
      + AS.profiles[id].latency + ' → ' + pDur[id].toFixed(1) + 's').join(' · ')
    + (pBad.length ? ' → ' + pBad.join('; ') : ''));
-/* Four equal buttons in the panel the page ships in, each two lines deep. There is no layout in this
-   harness, so the width is read out of the CSS that draws it, the same way the guide's rows are held
-   to theirs: the panel is a fixed width less its padding, the card spends its own padding and border,
-   and what is left after the gaps is shared by four equal columns. A label has to fit two lines of one
-   column — and its longest word one line, because a word cannot break and would burst the column. */
+/* Preset rows are equal columns in the panel the page ships in. There is no layout in this harness, so
+   the width is read out of the CSS that draws it, the same way the guide's rows are held to theirs: the
+   panel is a fixed width less its padding, the card spends its own padding and border, and what is
+   left after the gaps is shared by the row's buttons. An engine label may have two lines to spend —
+   that row is two lines deep — and its longest word must still clear one line, because a word cannot
+   break and would burst the column. */
 const P_ROOM = cssNum(/\.panel \{[^}]*width: (\d+)px/)
   - 2 * cssNum(/\.panel \{[^}]*padding: ([\d.]+)px/)
   - 2 * cssNum(/\.card \{[^}]*border: (\d+)px/)
@@ -1333,24 +1447,29 @@ const BTN_PAD = cssNum(/\.btns button \{[^}]*padding: ([\d.]+)px ([\d.]+)px/, 2)
 /* the border comes from the shared field/button rule, not the row's own */
 const BTN_BORDER = cssNum(/input\[type="number"\], button \{[^}]*border: (\d+)px/);
 const P_GAP = cssNum(/\.btns \{[^}]*gap: (\d+)px/);
-const P_COL = (P_ROOM - P_GAP * (PBTNS.length - 1)) / PBTNS.length;
-const P_CHARS = Math.floor((P_COL - 2 * BTN_PAD - 2 * BTN_BORDER) / (BTN_FONT * 0.6));
+const colPx = (n) => (P_ROOM - P_GAP * (n - 1)) / n;
+const colChars = (n) => Math.floor((colPx(n) - 2 * BTN_PAD - 2 * BTN_BORDER) / (BTN_FONT * 0.6));
+const P_CHARS = colChars(PBTNS.length);
 const pLines = (s) => Math.ceil(s.length / P_CHARS);
 const pWord = (s) => s.split(/\s+/).reduce((m, w) => Math.max(m, w.length), 0);
 const P_LABELS = PBTNS.map((b) => String(b.textContent).trim());
 ok('the preset row is four equal buttons and every label fits its column',
    P_LABELS.every((s) => pLines(s) <= 2 && pWord(s) <= P_CHARS),
-   'column ' + Math.round(P_COL) + 'px = ' + P_CHARS + ' chars a line · '
+   'column ' + Math.round(colPx(PBTNS.length)) + 'px = ' + P_CHARS + ' chars a line · '
      + P_LABELS.map((s) => s + ' ' + pLines(s) + 'L/' + pWord(s) + 'w').join(' · '));
-/* and the CSS has to actually make them equal, on one line, two lines tall: the budget above assumes
-   a quarter apiece, which is only true if the row asks for it — `flex: 1 1 auto` from `.btns` would
-   size them to their labels and make the shared column a fiction */
-const P_ROW_RULE = (STYLE.match(/#profiles \{[^}]*\}/) || [''])[0];
+/* and the CSS has to actually make them equal: the budget above assumes a share apiece, which is only
+   true if the row asks for it — `flex: 1 1 auto` from `.btns` sizes buttons to their labels and would
+   make the shared column a fiction. Both rows get it from `.presets`; the second line of height is the
+   engine row's alone, because only its labels need it. */
+const PRESET_ROW_RULE = (STYLE.match(/\.presets \{[^}]*\}/) || [''])[0];
+const PRESET_BTN_RULE = (STYLE.match(/\.presets button \{[^}]*\}/) || [''])[0];
 const P_BTN_RULE = (STYLE.match(/#profiles button \{[^}]*\}/) || [''])[0];
-ok('the preset buttons are equal quarters of one line, tall enough for two',
-   /flex-wrap: nowrap/.test(P_ROW_RULE) && /flex: 1 1 0/.test(P_BTN_RULE)
-     && /min-height: calc\(\d+(?:\.\d+)?em/.test(P_BTN_RULE),
-   'row ' + JSON.stringify(P_ROW_RULE.replace(/\s+/g, ' ')) + ' · button '
+ok('both preset rows are equal columns, the engine row two lines deep',
+   /flex-wrap: nowrap/.test(PRESET_ROW_RULE) && /flex: 1 1 0/.test(PRESET_BTN_RULE)
+     && /min-width: 0/.test(PRESET_BTN_RULE) && /min-height: calc\(\d+(?:\.\d+)?em/.test(P_BTN_RULE)
+     && /class="btns presets" id="profiles"/.test(html) && /class="btns presets" id="curvePresets"/.test(html),
+   'row ' + JSON.stringify(PRESET_ROW_RULE.replace(/\s+/g, ' ')) + ' · button '
+     + JSON.stringify(PRESET_BTN_RULE.replace(/\s+/g, ' ')) + ' · engine tall '
      + JSON.stringify(P_BTN_RULE.replace(/\s+/g, ' ')));
 /* …and it leads the card, because picking a machine is the thing this card is for: a shortcut below
    the three sliders it moves is one you find only after you have already hunted them */
@@ -1359,6 +1478,97 @@ ok('the presets lead the engine card',
      && html.indexOf('id="profiles"') < html.indexOf('id="prefill"')
      && html.indexOf('id="profiles"') < html.indexOf('id="latency"'),
    'Engine → presets → prefill → decode → cache → latency');
+/* --- curve presets ------------------------------------------------------------
+   The decay card got the same row for the same reason, and the same hold: a named curve in the table
+   with no button is a preset nobody can reach, and a button naming a curve that has left the table is
+   a click that loads nothing. The README records that these four once went untested while looking
+   tested, so both directions are checked, out of the source the handlers read and the markup the page
+   renders rather than a list kept by hand. The row sits above the chart because pressing one redraws
+   it, and `+ point` — an action on the table, not a preset — is under the table, in a row of one. */
+const CURVE_NAMES = [...((src.match(/const CURVES = \{([\s\S]*?)\n\};/) || [, ''])[1]
+  .matchAll(/^\s+([A-Za-z][\w-]*):\s*\{\s*pts:/gm))].map((m) => m[1]);
+const CURVE_BTNS = [...html.matchAll(/<button data-curve="([\w-]+)">([^<]*)</g)]
+  .map((m) => ({ name: m[1], label: m[2].trim() }));
+const C_CHARS = colChars(CURVE_BTNS.length || 1);
+ok('every named curve has a button and every button has a curve',
+   CURVE_NAMES.length > 0 && CURVE_NAMES.every((n) => CURVE_BTNS.some((b) => b.name === n))
+     && CURVE_BTNS.every((b) => CURVE_NAMES.indexOf(b.name) !== -1)
+     && new Set(CURVE_BTNS.map((b) => b.name)).size === CURVE_BTNS.length,
+   'curves ' + CURVE_NAMES.join(' ') + ' · buttons ' + CURVE_BTNS.map((b) => b.label).join(' '));
+ok('the curve presets fit one line of their column',
+   CURVE_BTNS.every((b) => b.label.length <= C_CHARS && pWord(b.label) <= C_CHARS),
+   'column ' + Math.round(colPx(CURVE_BTNS.length || 1)) + 'px = ' + C_CHARS + ' chars · '
+     + CURVE_BTNS.map((b) => b.label + ' ' + b.label.length).join(' · '));
+ok('the curve card reads presets, chart, points, then add point',
+   html.indexOf('id="curvePresets"') < html.indexOf('id="curveChart"')
+     && html.indexOf('id="curveChart"') < html.indexOf('id="curveTable"')
+     && html.indexOf('id="curveTable"') < html.indexOf('id="addPoint"')
+     && html.indexOf('id="addPoint"') > html.lastIndexOf('</table>', html.indexOf('id="addPoint"')),
+   'presets → chart → points → + point');
+/* The four labels are one word each, so a curve preset's hover note is the only place the page says
+   what its shape does to a run — the same bargain the engine row makes with its four machine names.
+   It is written by hand beside the points it describes, in the same entry of CURVES that holds them,
+   and read back here: every number in it has to be a point that curve draws, because a note naming one
+   it has lost describes a shape the chart under it does not show. Naming fewer points than the curve
+   has is allowed — the two the shape turns on are what the line is for — and the points are read off
+   the live page rather than a second parse of the source, so what is compared is the note a reader
+   gets against the curve the button actually loads. */
+const CURVE_BTN = document.querySelectorAll('[data-curve]');
+const PRESET_BTNS = PBTNS.concat(CURVE_BTN);
+const saidPts = (s) => (String(s).match(/\d+(?:\.\d+)?%\s+at\s+[\d.]+(?:k|M)?/g) || [])
+  .map((t) => {
+    const m = t.match(/^(\d+(?:\.\d+)?)%\s+at\s+([\d.]+)(k|M)?$/);
+    return Math.round(parseFloat(m[2]) * (m[3] === 'M' ? 1e6 : m[3] === 'k' ? 1e3 : 1)) + ':'
+      + Math.round(parseFloat(m[1]));
+  }).sort().join(' ');
+const cNoteBad = [];
+for (const b of CURVE_BTN) {
+  const c = (AS.curves || {})[b.dataset.curve];
+  if (!c || !c.pts.length) { cNoteBad.push(b.dataset.curve + ' has no curve behind it'); continue; }
+  const pts = c.pts.map((p) => p[0] + ':' + p[1]);
+  const stray = saidPts(b.title).split(' ').filter(Boolean).filter((p) => pts.indexOf(p) < 0);
+  if (stray.length) cNoteBad.push(b.dataset.curve + ' notes ' + stray.join(' ')
+    + ', which is not on the curve (' + pts.join(' ') + ')');
+}
+ok('every number a curve preset notes is a point its curve draws',
+   CURVE_BTN.length > 0 && CURVE_NAMES.every((n) => CURVE_BTN.some((b) => b.dataset.curve === n))
+     && !cNoteBad.length,
+   CURVE_BTN.map((b) => b.dataset.curve + ' → ' + (saidPts(b.title) || 'no number')).join(' · ')
+     + (cNoteBad.length ? ' → ' + cNoteBad.join('; ') : ''));
+/* What a preset writes is a fact about the row, not about one of its four options, so each row says it
+   once on the caption above the buttons and no button repeats it. Eight buttons ending in the same
+   clause is the same sentence eight times, after the line the reader stopped for. */
+const GSUB_NOTES = [...html.matchAll(/class="gsub"[^>]*title="([^"]+)"/g)].map((m) => m[1]);
+ok('both preset rows say what a preset writes, once, on the caption',
+   GSUB_NOTES.length >= 3
+     && GSUB_NOTES.some((t) => /each button writes/.test(t) && /stay where they are/.test(t))
+     && GSUB_NOTES.some((t) => /writes this curve and the points table under it/i.test(t))
+     && PRESET_BTNS.every((b) => !/\bwrites\b/i.test(String(b.title || ''))),
+   GSUB_NOTES.map((t) => JSON.stringify(t.slice(0, 40) + '…')).join(' ')
+     + ' · ' + PRESET_BTNS.length + ' preset buttons, ' + PRESET_BTNS
+       .filter((b) => /\bwrites\b/i.test(String(b.title || ''))).length + ' repeating it');
+/* The caption's claim is then held to the card rather than to the sentence: the row owns the curve and
+   the table under it, so every field it does not own is read back before and after a sweep of all
+   four. The curve is put back afterwards, because the checks below describe the page rather than the
+   last thing this harness clicked. */
+const cKEEP = AS.config.curve.map((p) => ({ ctx: p.ctx, mult: p.mult }));
+const cFields = () => [$('#prefill').value, $('#decode').value, $('#prefillRange').value,
+  $('#decodeRange').value, $('#latency').value, $('#jitter').value, $('#cache').checked].join('|');
+const cFROM = cFields();
+for (const b of CURVE_BTN) { b.dispatch('click'); pump(); }
+ok('a curve preset writes the curve and nothing else on the card',
+   cFields() === cFROM,
+   'speeds, sliders, latency, jitter and cache were ' + cFROM + ' and are ' + cFields());
+AS.config.curve = cKEEP; AS.rebuild(); pump();
+/* Short enough to read while the tooltip is up. A preset row is a choice, so its note is one line of
+   prose and then the numbers — the paragraph each of these used to be is a second thing to read
+   before the click rather than the reason to make it. Both rows are held to one ceiling, so the next
+   preset added to either is written to the same length as these. */
+const NOTE_MAX = 240;
+ok('every preset hover note stays one line of prose and its numbers',
+   PRESET_BTNS.every((b) => String(b.title || '').length <= NOTE_MAX),
+   PRESET_BTNS.map((b) => (b.dataset.profile || b.dataset.curve) + ' ' + String(b.title || '').length
+     + 'c').join(' · ') + ' · ceiling ' + NOTE_MAX);
 ok('a preset moves the two speeds and the wait, and nothing else',
    P_UNTOUCHED === $('#jitter').value + '|' + $('#cache').checked + '|' + AS.config.curve.map((c) => c.ctx + ':' + c.mult).join(','),
    'jitter, cache and curve still ' + P_UNTOUCHED);
@@ -1368,9 +1578,9 @@ ok('a preset moves the two speeds and the wait, and nothing else',
    `API` is not asserted, because a 3 s wait on every request can legitimately outweigh what its
    prefill saves, and which way it lands is the comparison the page is for rather than a rule. */
 ok('a faster machine really shortens the run',
-   pDur.apifast < pDur.local && pDur.asic < pDur.local,
-   'local ' + pDur.local.toFixed(1) + 's → API (fast) ' + pDur.apifast.toFixed(1) + 's · ASIC '
-     + pDur.asic.toFixed(1) + 's · API ' + (pDur.api || 0).toFixed(1) + 's');
+   pDur.APIfast < pDur.local && pDur.ASIC < pDur.local,
+   'local ' + pDur.local.toFixed(1) + 's → API (fast) ' + pDur.APIfast.toFixed(1) + 's · ASIC '
+     + pDur.ASIC.toFixed(1) + 's · API ' + (pDur.API || 0).toFixed(1) + 's');
 /* and the pressed state is a read-out, not a stamp: it has to let go as soon as a field stops
    matching, or the row claims a machine the page left two keystrokes ago */
 PBTNS[0].dispatch('click'); pump();
@@ -1491,6 +1701,24 @@ ok('engine and contention share one card',
      engAt.every((i) => i >= 0) && engAt.every((i, k) => k === 0 || i > engAt[k - 1]) &&
      engAt.every((i) => i > PANEL.indexOf('<h2>Engine</h2>') && i < engEnd),
    ENG_IDS.map((id, i) => id + '@' + engAt[i]).join(' '));
+/* …and the decay curve is a third group in that same card rather than the card after it. It is not a
+   setting beside prefill and decode; it is the shape of both of them — each is a rate *at a point on
+   this curve* — so a reader had to hold one card while reading the next. Like `contention`, its name is
+   a caption with the definition on hover and no heading of its own, and the group rule is what separates
+   it from the controls above. */
+const CURVE_IDS = ['curveN', 'curvePresets', 'curveChart', 'curveTable', 'addPoint'];
+const curAt = CURVE_IDS.map((id) => PANEL.indexOf('id="' + id + '"'));
+const NEXT_CARD = PANEL.indexOf('class="card"', PANEL.indexOf('<h2>Engine</h2>') + 1);
+ok('the decay curve is a group inside the engine card, like contention',
+   !/<h2>Throughput decay curve/.test(PANEL)
+     && /class="gsub"[^>]*>[^<]*throughput decay curve/i.test(PANEL)
+     && curAt.every((i) => i >= 0) && curAt.every((i, k) => k === 0 || i > curAt[k - 1])
+     /* the whole group is inside the engine card — which is now also the panel's last card — and after
+        the TTFT line, so the group closes the card instead of interrupting the fields it describes */
+     && curAt.every((i) => i > PANEL.indexOf('<h2>Engine</h2>') && i > PANEL.indexOf('id="engineHint"'))
+     && (NEXT_CARD < 0 || curAt.every((i) => i < NEXT_CARD)),
+   CURVE_IDS.map((id, i) => id + '@' + curAt[i]).join(' ') + ' · ' + (NEXT_CARD < 0
+     ? 'engine card closes the panel' : 'another card follows at ' + NEXT_CARD));
 /* the wait is one field with a spread on it, not two stacked settings: label carries the
    unit, both number fields ride the right edge, and ± reads as the relation between them.
    The spread field loses its <label> to fit, so it has to keep an accessible name — a field
@@ -1666,9 +1894,13 @@ ok('the header tail is pinned to the right',
      html.indexOf('id="theme"') < html.indexOf('id="panelToggle"') &&
      !/class="spacer"/.test(html),
    'auto margin, no stretchy spacer left behind');
-ok('the curve card uses one word for its axis',
+/* the axis is named one word in three places — the table header, the chart's axis label, the caption —
+   and the caption is now a `.gsub`, lowercase in the markup and uppercased by the rule, the way
+   `contention` is; so it is matched case-insensitively, and against the caption it lives in rather
+   than a heading that no longer exists */
+ok('the decay curve group uses one word for its axis',
    /^context size$/i.test(curveHead[0] || '') && /' context \u2192 '/.test(src) &&
-     /Throughput decay curve/.test(html),
+     /class="gsub"[^>]*>[^<]*throughput decay curve · <span id="curveN">/i.test(html),
    'header "' + curveHead.join(' | ') + '"');
 /* two invariants on one row: it belongs to the cache (with the toggle off there would be no
    reused prefix to count, so the row would report nothing forever), and it sits directly under

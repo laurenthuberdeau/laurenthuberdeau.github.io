@@ -67,8 +67,9 @@
 
     <div class="card">
       <h2>Engine</h2>
-      <!-- named profiles for everything the card holds: the two speeds below and the request wait
-           under that. They come first because that is the order the card is read in — pick a machine,
+      <!-- named profiles for three of the things this card holds — the two speeds below and the request
+           wait under that; the decay curve at the card's foot is deliberately not one of them. They
+           come first because that is the order the card is read in — pick a machine,
            then adjust it — and because pressing one is what most people do with this card, not a
            discovery they make after they have already set three sliders. The buttons are built from
            PROFILES in the script, one source for the label, the note under it and the values written,
@@ -76,8 +77,8 @@
            `contention` and carries the definition on hover the same way; it spends no rule above it,
            because there is nothing above it to be set off from. -->
       <div class="gsub"
-           title="A machine, as prefill speed, decode speed and request latency — the three settings each button writes, on its own note. The decay curve, the jitter and the prompt cache stay where they are. A button reads as current only while all three fields still match it.">engine presets</div>
-      <div class="btns" id="profiles"></div>
+           title="A machine, as prefill speed, decode speed and request latency — the three settings each button writes. The decay curve, the jitter and the prompt cache stay where they are. A button reads as current only while all three fields still match it.">engine presets</div>
+      <div class="btns presets" id="profiles"></div>
       <!-- the name is a caption, not a label pointing at the control: a browser suppresses the
            title tooltip on such a label, and that is exactly the text you hover to learn what a
            setting means. So the row carries the note once and everything inside it — caption,
@@ -97,19 +98,32 @@
            title="Waits the engine imposes outside the model's own work. With latency and spread both at zero, the run is a pure throughput model.">contention</div>
       <div class="row duo" title="Time it takes for the engine to start working on a request."><span class="cap" id="latencyName">request latency</span><input id="latency" type="number" min="0" max="120000" step="50" aria-labelledby="latencyName"><span class="pm" aria-hidden="true">±</span><input id="jitter" type="number" min="0" max="60000" step="50" aria-label="time variation in the request latency, in ms" title="Time variation in the request latency, introducing some randomness to the wait."><span class="unit">ms</span></div>
       <div class="hint" id="engineHint" title="Time to first token: time it takes to get the first token returned by the engine."></div>
-    </div>
-
-    <div class="card">
-      <h2>Throughput decay curve · <span id="curveN">N</span>-point</h2>
-      <svg class="chart" id="curveChart" viewBox="0 0 320 132" preserveAspectRatio="none"></svg>
-      <table id="curveTable"></table>
-      <div class="btns">
+      <!-- the decay curve is not a setting beside these ones; it is the shape of the two speeds above,
+           since each is a rate *at a point on this curve*. So it closes the engine card as a group in
+           `contention`'s idiom — caption carrying the definition on hover, no heading of its own —
+           rather than being the card after the one it has to be read against. -->
+      <div class="gsub"
+           title="How much of full speed the engine still manages as a request grows. Each point is a context size and the percentage of the prefill and decode speeds above that survives at it; both of them follow this curve. A preset writes this curve and the points table under it, and nothing else.">throughput decay curve · <span id="curveN">N</span>-point</div>
+      <!-- the four named curves go above the thing they replace: pressing one redraws the chart and
+           rewrites the table under it, so the choice comes first and its result after, the same way
+           the engine presets sit above the fields they write. Equal quarters of the card for the same
+           reason too, but one line tall — these four names fit a column without help, so they take no
+           second line, and what each one means is on its hover note instead. The note is not here: it
+           travels with the points it describes, in CURVES, and the script puts it on the button, so a
+           name and the shape it loads cannot be edited apart. What is said here instead, on the
+           caption like `engine presets` says its own, is what any of the four writes — once for the
+           row, rather than four times over on its buttons. -->
+      <div class="btns presets" id="curvePresets">
         <button data-curve="flat">flat</button>
         <button data-curve="gentle">gentle</button>
         <button data-curve="steep">steep</button>
         <button data-curve="cliff">cliff</button>
-        <button id="addPoint">+ point</button>
       </div>
+      <svg class="chart" id="curveChart" viewBox="0 0 320 132" preserveAspectRatio="none"></svg>
+      <table id="curveTable"></table>
+      <!-- the one action on the table sits under it, and it needs no rule of its own to span the row:
+           `.btns button` is `flex: 1 1 auto`, so a lone button in the row is the whole row -->
+      <div class="btns"><button id="addPoint">+ point</button></div>
     </div>
 
   </aside>

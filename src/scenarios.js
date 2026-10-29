@@ -268,7 +268,7 @@ const SESSIONS = [
   },
   {
     id: 'doc',
-    name: 'api reference · decode-bound',
+    name: 'API reference · decode-bound',
     about: 'Writing an API reference for an internal team, the artifact streamed through two Write calls as tool args. Deeply decode-bound: hundreds of tokens per write generated against a near-instant prefill, so the run is dominated by the act of typing the document, not re-reading the prompt.',
     bootTokens: 7200,
     steps: [
