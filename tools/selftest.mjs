@@ -245,6 +245,28 @@ ok('phase bar names the phase the playhead is in', BAR.every(([ph, dom, , , edge
    bug in the run rather than a quiet moment in it */
 ok('phase bar always has something to say', BAR.every(([,, v, k]) => k.length > 1 && v.length > 4),
    BAR.length + ' samples, shortest detail ' + Math.min(...BAR.map(([, , v]) => v.length)) + ' chars');
+
+/* --- prefill progress inside every prefill band ---------------------------------------
+   With the cache on, the reused prefix costs nothing, so the denominator of
+   `{N} / {M} tok ingested` is the cold tail alone. If N is the position the engine has
+   reached in the prompt instead of the count it has taken in, it starts at the cached
+   prefix and finishes past its own denominator — a bar that claims to have ingested more
+   tokens than the request had to ingest. The coarse sweep can land anywhere, so stand
+   inside every prefill band, including its last instant, where the overshoot is worst. */
+const TOKVAL = (s) => parseFloat(s) * (/M$/i.test(s) ? 1e6 : /k$/i.test(s) ? 1e3 : 1);
+const PREFILL_BAR = [];
+for (const band of SEG.filter((b) => b.phase === 'prefill')) {
+  for (const f of [0.002, 0.25, 0.5, 0.75, 1 - 1e-4]) {
+    const at = band.from + (band.to - band.from) * f;
+    AS.seek(at); pump();
+    const m = $('#phase .v').textContent.match(/([\d.]+[kM]?) \/ ([\d.]+[kM]?) tok ingested/);
+    PREFILL_BAR.push([band.req, m, $('#phase .v').textContent]);
+  }
+}
+AS.seek(AS.tl.duration); pump();   /* leave the playhead where the sweep left it */
+ok('prefill counts only what the engine had to ingest', PREFILL_BAR.length > 0
+   && PREFILL_BAR.every(([, m]) => m && TOKVAL(m[1]) <= TOKVAL(m[2])),
+   PREFILL_BAR.map(([, m, v]) => m ? m[0] : (v.match(/tok ingested/) ? v : 'no count')).join(' | '));
 /* --- transcript follow -------------------------------------------------------------
    The shim has no box model, so give the pane one: blocks stack down the page and report
    positions relative to the pane's scrollTop, the way a scroll container does — and, the way

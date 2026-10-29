@@ -1023,10 +1023,12 @@ function prefillSeconds(from, to, pts, base) {
   return secs;
 }
 
-/* the inverse of prefillSeconds: how many tokens of [from, to) are ingested after
-   `elapsed` seconds. The phase bar's progress is a fraction of time, but the token count
-   it prints has to be the real one, which is not linear while the curve bends inside the
-   request. Walks the same blocks, interpolating linearly within the block the time lands in. */
+/* the inverse of prefillSeconds: the position in [from, to) the engine has reached after
+   `elapsed` seconds. It is a position, not a count — absolute like the curve it integrates,
+   which is read against context size — so a caller that wants tokens ingested subtracts
+   `from`. The phase bar's progress is a fraction of time, but the token count it prints has
+   to be the real one, which is not linear while the curve bends inside the request. Walks the
+   same blocks, interpolating linearly within the block the time lands in. */
 function prefillTokensAt(from, to, pts, base, elapsed) {
   if (elapsed <= 0) return from;
   let spent = 0;
@@ -1632,9 +1634,15 @@ function render(t) {
             fmtDur(q.prefillMs / 1000) + ' prefill next', p.frac);
   } else if (p.phase === 'prefill') {
     const q = p.item.req;
-    const ingested = prefillTokensAt(q.cached, q.ctx, P.curve, P.prefill, t - p.item.prefillStart);
-    const eff = effRate(P.prefill, P.curve, ingested);
-    setPhase('prefill', 'req #' + q.no + ' · ' + fmtTok(ingested) + ' / ' + fmtTok(q.cold) +
+    /* prefillTokensAt answers where in the prompt the engine has reached, not how much it has
+       taken in, and it has to work in absolute positions: the decay curve is a function of
+       context size, so the rate at token 118k of the prompt is not the rate at token 118k of
+       the cold tail. The count beside the denominator is the other thing — only the cold tail
+       is being ingested at all — so the reused prefix comes back off. Left in, a cache hit
+       starts the numerator at the prefix and walks it past its own denominator. */
+    const at = prefillTokensAt(q.cached, q.ctx, P.curve, P.prefill, t - p.item.prefillStart);
+    const eff = effRate(P.prefill, P.curve, at);
+    setPhase('prefill', 'req #' + q.no + ' · ' + fmtTok(at - q.cached) + ' / ' + fmtTok(q.cold) +
             ' tok ingested · ' + (q.cached ? fmtTok(q.cached) + ' reused' : 'cold') +
             ' @ ' + fmtTok(eff) + ' tok/s', p.frac);
   } else if (p.phase === 'decode') {
