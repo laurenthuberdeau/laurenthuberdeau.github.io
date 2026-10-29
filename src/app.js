@@ -79,6 +79,37 @@ const CURVES = {
   steep:  [[0, 100], [16000, 82], [64000, 55], [160000, 30], [256000, 18]],
   cliff:  [[0, 100], [96000, 96], [100000, 38], [256000, 22]]
 };
+/* Named engine profiles — prefill, decode and the request wait together — for the machines people
+   actually run a session against: a model on your own hardware, a hosted frontier API, a faster API
+   tier, and fixed-weight silicon where decode runs close to prefill. They exist because
+   these settings only make sense as a set: the same prefill speed is a different machine depending
+   on what the wait in front of each request is, and hunting a machine's position across three
+   sliders is not a way to compare machines.
+
+   Speeds and the wait, and nothing else: the decay curve, the jitter and the prompt cache belong to
+   the deployment rather than to the hardware, so a preset leaves them where you had them. Nothing
+   is remembered either — a preset writes the fields and is gone, so it is a shortcut rather than a
+   mode, and a link copied after one is pressed carries plain numbers and replays identically
+   without knowing a preset was ever touched. Every value sits inside LIMITS so the button lands on
+   the number it names; the selftest clicks each one and reads it back. */
+const PROFILES = {
+  local: {
+    name: 'local', prefill: 500, decode: 50, latency: 100,
+    note: 'A model on your own hardware: the prompt is ingested at a few hundred tok/s, so a long context decides how long you wait for the first token, and there is almost no round trip in front of it. 500 tok/s prefill, 50 tok/s decode, 100ms request latency.'
+  },
+  api: {
+    name: 'API', prefill: 10000, decode: 75, latency: 3000,
+    note: 'A hosted frontier API: the prompt is ingested so fast that prefill stops dominating and the wait becomes decode — but you pay the round trip and the scheduler ahead of every one of those requests. 10k tok/s prefill, 75 tok/s decode, 3s request latency.'
+  },
+  apifast: {
+    name: 'API (fast)', prefill: 10000, decode: 250, latency: 1000,
+    note: 'The fast API tier — a DeepSeek V4 Flash class model: reads the prompt as fast as the frontier API, generates a few times faster, and answers sooner. 10k tok/s prefill, 250 tok/s decode, 1s request latency.'
+  },
+  asic: {
+    name: 'ASIC', prefill: 20000, decode: 10000, latency: 500,
+    note: 'Fixed-weight inference silicon: the weights live on the chip, so generation runs close to the rate the prompt is read at and the run becomes tool-bound. 20k tok/s prefill, 10k tok/s decode, 500ms request latency.'
+  }
+};
 const SPEEDS = [0.25, 0.5, 1, 2, 4, 8, 16];
 /* fixed so that a link replays identically, without an option for it */
 const JITTER_SEED = 1337;
@@ -112,7 +143,7 @@ const mkPts = (src) => src.map(([ctx, mult]) => ({ ctx, mult }));
    would refuse to show */
 const LIMITS = {
   prefill: { min: 50, max: 100000 },
-  decode:  { min: 1, max: 1000 },
+  decode:  { min: 1, max: 10000 },
   latency: { min: 0, max: 120000 },
   jitter:  { min: 0, max: 60000 }
 };
@@ -1211,6 +1242,49 @@ const fromRange = (p, r) => {
   return Math.max(r[0], Math.round(v));
 };
 
+/* ------------------------------ engine presets ---------------------------
+   The first thing in the engine card, ahead of the fields it writes: picking a machine is what most
+   people do with this card, and a shortcut that sits below the three sliders it moves is a shortcut
+   found only by someone who has already hunted them. Built here from PROFILES so the label, the note
+   under it and the values written cannot drift apart; the markup holds the heading and the row.
+
+   The label is only the name — four of them share one line inside a 372px panel — and the three
+   numbers each one sets are on the hover note, where the page puts anything that needs a unit and a
+   sentence to be understood.
+
+   The button carries `aria-current` while the fields sit exactly on it, so the row answers "am I on
+   that machine right now" rather than "was this button pressed once" — move a slider and the pressed
+   state drops, because the page is no longer on that profile. */
+const PROFILE_BTNS = [];
+for (const id of Object.keys(PROFILES)) {
+  const p = PROFILES[id];
+  const b = el('button', null, p.name);
+  b.dataset.profile = id;
+  b.title = p.note + ' Writes these three settings only — the decay curve, the jitter and the prompt cache stay as they are.';
+  b.addEventListener('click', () => {
+    /* clamped rather than trusted, so a profile outside the bounds can never put a number in the
+       model that a link could not have carried; the selftest reads each one back unclamped */
+    config.prefill = clamp(p.prefill, LIMITS.prefill.min, LIMITS.prefill.max);
+    config.decode = clamp(p.decode, LIMITS.decode.min, LIMITS.decode.max);
+    config.latency = clamp(p.latency, LIMITS.latency.min, LIMITS.latency.max);
+    syncControls();
+    rebuild();
+  });
+  PROFILE_BTNS.push(b);
+  $('#profiles').appendChild(b);
+}
+
+/* which profile the page is on, if any: a preset is current only while every field it writes sits
+   exactly on it. Separate from syncControls because a typed field must be able to drop it without
+   having the whole panel rewritten under the caret. */
+function syncProfiles() {
+  for (const b of PROFILE_BTNS) {
+    const p = PROFILES[b.dataset.profile];
+    b.setAttribute('aria-current', String(!!p && config.prefill === p.prefill
+      && config.decode === p.decode && config.latency === p.latency));
+  }
+}
+
 /* the standing note under the engine controls, and the one thing it says when no control is
    being asked about */
 const HINT_TTFT = 'TTFT ≈ queue + prefill + decode 1 token';
@@ -1224,6 +1298,7 @@ function syncControls() {
   $('#cache').checked = !!config.cache;
   $('#latency').value = String(config.latency);
   $('#jitter').value = String(config.jitter);
+  syncProfiles();
   /* one line, three durations, in the order the phases happen. It stays a sum because that is
      all the reader needs here: rates and the curve belong on the hover, and a rate in place of
      a duration is wrong twice over — it understates prefill on every curve below 100%, and it
@@ -1247,6 +1322,7 @@ const num = (id, key, min, max, int) => {
     if (RANGE[key]) $('#' + key + 'Range').value = String(toRange(v, RANGE[key]));
     /* coalesce like the sliders: a typed multi-digit value rebuilds once, not
        once per keystroke */
+    syncProfiles();
     scheduleRebuild();
   };
   node.addEventListener('input', () => {
@@ -1658,7 +1734,7 @@ rebuild();
 if (config.autoplay) play(); else { updatePlayBtn(); render(vTime); }
 /* the console and the selftest both want to know where the playhead actually is, as
    opposed to what the clock says after formatting */
-window.AS = { config, sessions: SESSIONS, scenarioStats,
+window.AS = { config, sessions: SESSIONS, profiles: PROFILES, scenarioStats,
               get tl() { return TL; }, get vTime() { return vTime; }, get playing() { return playing; },
               rebuild, seek, play, pause, phaseAt, render, stepPhase, selectSession: selectScenario,
               openPicker, closePicker, openIntro, closeIntro,

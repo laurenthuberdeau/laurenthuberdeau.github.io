@@ -168,6 +168,24 @@ ok('autoplay starts playback on load', AS.config.autoplay
   ? $('#play').textContent.indexOf('pause') !== -1
   : $('#play').textContent.indexOf('pause') === -1, JSON.stringify($('#play').textContent));
 
+/* The preset row is a read-out of the settings rather than a record of clicks, so it has to be right
+   about the link that opened the page too. Nowhere else can this be checked: nothing has touched a
+   field yet, so the page is on exactly the profile the URL carried — which is how a preset gets
+   shared, since a preset writes plain settings and no `profile` parameter exists. The shipped
+   defaults (1500/50/300) are deliberately none of the four, so a plain link marks nothing. */
+const PBTNS = $('#profiles').children.slice();
+const pPressed = () => PBTNS.filter((b) => b.getAttribute('aria-current') === 'true')
+  .map((b) => b.dataset.profile);
+const pMatch = PBTNS.filter((b) => {
+  const p = AS.profiles[b.dataset.profile];
+  return p && AS.config.prefill === p.prefill && AS.config.decode === p.decode
+    && AS.config.latency === p.latency;
+}).map((b) => b.dataset.profile);
+ok('the profile the link carries is the profile the row says the page is on',
+   PBTNS.length === Object.keys(AS.profiles).length && pPressed().join() === pMatch.join(),
+   AS.config.prefill + '/' + AS.config.decode + '/' + AS.config.latency + ' → current ['
+     + pPressed().join(', ') + ']' + (pMatch.length ? ', matches ' + pMatch.join(', ') : ', matches none'));
+
 /* the shipped default is a parked page, so pin the default itself rather than the button: this
    harness boots with autoplay=0 in the URL either way, which is exactly the case that cannot
    tell a flipped default from the default it replaced */
@@ -203,8 +221,22 @@ ok('a shape is a button, not a clickable div', SHAPES().every((b) => b.tagName =
    SHAPES().map((b) => b.tagName + '[' + b.type + ']').join(' '));
 /* the claim in the card is a claim about the corpus: the decode-heavy one has to be dominated by
    generating and the prefill-heavy one by reading, at the shipped profile. If the corpus drifts the
-   label over the card is wrong while the card still works, which is the drift nobody notices. */
-const shapeRatio = (id) => { const s = AS.scenarioStats(id); return s.in / Math.max(1e-9, s.out); };
+   label over the card is wrong while the card still works, which is the drift nobody notices. And it
+   is measured at the defaults rather than at whatever the URL carried, because that is what "the
+   shipped profile" means and the only profile the claim was ever about: a link that boots the page on
+   a 500 tok/s local profile does make the decode-heavy session prefill-leaning, and the card says so
+   with live numbers — holding that against the label would make the label a promise about one
+   machine rather than a description of a corpus. */
+const defNum = (k) => parseFloat((DEFAULTS_SRC.match(new RegExp('\\b' + k + ':\\s*([\\d.]+)')) || [, ''])[1]);
+const shapeRatio = (id) => {
+  const live = { prefill: AS.config.prefill, decode: AS.config.decode, latency: AS.config.latency,
+                 jitter: AS.config.jitter, cache: AS.config.cache };
+  Object.assign(AS.config, { prefill: defNum('prefill'), decode: defNum('decode'),
+    latency: defNum('latency'), jitter: defNum('jitter'), cache: !!defNum('cache') });
+  const s = AS.scenarioStats(id);
+  Object.assign(AS.config, live);
+  return s.in / Math.max(1e-9, s.out);
+};
 const SHAPE_IDS = ['greenfield', 'long-log'];
 const shapeSession = (i) => (AS.sessions.find((s) => s.id === SHAPE_IDS[i]) || {}).name || 'MISSING';
 const shapeText = (i) => (AS.introShapes()[i] || { textContent: '' }).textContent;
@@ -331,6 +363,7 @@ ok('every shortcut the guide lists still answers',
 const OPTION_EVIDENCE = [
   ['prefill speed', () => /id="prefill"/.test(html) && /id="prefillRange"/.test(html)],
   ['decode speed', () => /id="decode"/.test(html) && /id="decodeRange"/.test(html)],
+  ['engine presets', () => /id="profiles"/.test(html)],
   ['prompt caching', () => /id="cache"/.test(html)],
   ['request latency', () => /id="latency"/.test(html)],
   ['throughput decay curve', () => /id="curveTable"/.test(html)],
@@ -1239,6 +1272,126 @@ if (circles.length) {
 }
 ok('handler battery clean', errors.length === 0, errors.slice(0, 3).join(' ;; '));
 ok('config survived handler battery', AS.config.prefill > 0 && AS.config.decode > 0 && AS.tl.duration > 0);
+
+/* --- engine presets ---------------------------------------------------------------------
+   A preset is the one place the panel can put a number in the model that no field was asked for, so
+   every button is clicked and each of the three settings it owns is read back twice — from the model
+   and from the field the reader sees — next to the three it must not touch. The label is held to the
+   values too: outside PROFILES it is the only place those numbers are written down, so a button
+   printing the wrong speed is a promise the run does not keep and nothing else would notice. */
+const P_IDS = Object.keys(AS.profiles);
+const pFields = () => ({ prefill: +$('#prefill').value, decode: +$('#decode').value, latency: +$('#latency').value });
+const P_BEFORE = pFields();
+const P_UNTOUCHED = $('#jitter').value + '|' + $('#cache').checked + '|' + AS.config.curve.map((c) => c.ctx + ':' + c.mult).join(',');
+const pBad = [];
+const pDur = {};
+/* read a number back out of prose written by hand next to it — "10k tok/s prefill", "3s request
+   latency" — so a note that drifted from the values behind the button is caught, not admired */
+const numSaid = (re, s, mult) => { const m = String(s).match(re); return m ? Math.round(parseFloat(m[1]) * mult(m)) : NaN; };
+const kOf = (m) => (/k/i.test(m[1]) ? 1000 : 1);
+for (const b of PBTNS) {
+  const id = b.dataset.profile, p = AS.profiles[id];
+  if (!p) { pBad.push(id + ' has no profile behind it'); continue; }
+  b.dispatch('click'); pump();
+  pDur[id] = AS.tl.duration;
+  const m = AS.config.prefill + '/' + AS.config.decode + '/' + AS.config.latency;
+  if (AS.config.prefill !== p.prefill || AS.config.decode !== p.decode || AS.config.latency !== p.latency)
+    pBad.push(id + ' set ' + m + ', not ' + p.prefill + '/' + p.decode + '/' + p.latency);
+  const f = pFields();
+  if (f.prefill !== p.prefill || f.decode !== p.decode || f.latency !== p.latency)
+    pBad.push(id + ' left the fields at ' + f.prefill + '/' + f.decode + '/' + f.latency);
+  if (pPressed().join() !== id) pBad.push(id + ' pressed reads [' + pPressed().join(', ') + ']');
+  /* the label is the name alone, which leaves the hover note as the only place the page tells a
+     reader what a button sets — so the note is read back against the values it describes */
+  if (String(b.textContent).trim() !== p.name)
+    pBad.push(id + ' is labelled ' + JSON.stringify(b.textContent) + ', not ' + JSON.stringify(p.name));
+  const said = {
+    prefill: numSaid(/([\d.]+k?) tok\/s prefill/i, b.title, kOf),
+    decode: numSaid(/([\d.]+k?) tok\/s decode/i, b.title, kOf),
+    latency: numSaid(/([\d.]+)(ms|s) request latency/i, b.title, (m) => (m[2] === 's' ? 1000 : 1))
+  };
+  if (said.prefill !== p.prefill || said.decode !== p.decode || said.latency !== p.latency)
+    pBad.push(id + ' notes ' + [said.prefill, said.decode, said.latency].join('/') + ' but writes '
+      + p.prefill + '/' + p.decode + '/' + p.latency);
+}
+ok('every engine preset sets the machine it names, in the model and in the fields',
+   PBTNS.length === P_IDS.length && !pBad.length,
+   P_IDS.map((id) => id + ' ' + AS.profiles[id].prefill + '/' + AS.profiles[id].decode + '/'
+     + AS.profiles[id].latency + ' → ' + pDur[id].toFixed(1) + 's').join(' · ')
+   + (pBad.length ? ' → ' + pBad.join('; ') : ''));
+/* Four equal buttons in the panel the page ships in, each two lines deep. There is no layout in this
+   harness, so the width is read out of the CSS that draws it, the same way the guide's rows are held
+   to theirs: the panel is a fixed width less its padding, the card spends its own padding and border,
+   and what is left after the gaps is shared by four equal columns. A label has to fit two lines of one
+   column — and its longest word one line, because a word cannot break and would burst the column. */
+const P_ROOM = cssNum(/\.panel \{[^}]*width: (\d+)px/)
+  - 2 * cssNum(/\.panel \{[^}]*padding: ([\d.]+)px/)
+  - 2 * cssNum(/\.card \{[^}]*border: (\d+)px/)
+  - 2 * cssNum(/\.card \{[^}]*padding: ([\d.]+)px ([\d.]+)px/, 2);
+const BTN_FONT = cssNum(/\.btns button \{[^}]*font-size: (\d+)px/);
+const BTN_PAD = cssNum(/\.btns button \{[^}]*padding: ([\d.]+)px ([\d.]+)px/, 2);
+/* the border comes from the shared field/button rule, not the row's own */
+const BTN_BORDER = cssNum(/input\[type="number"\], button \{[^}]*border: (\d+)px/);
+const P_GAP = cssNum(/\.btns \{[^}]*gap: (\d+)px/);
+const P_COL = (P_ROOM - P_GAP * (PBTNS.length - 1)) / PBTNS.length;
+const P_CHARS = Math.floor((P_COL - 2 * BTN_PAD - 2 * BTN_BORDER) / (BTN_FONT * 0.6));
+const pLines = (s) => Math.ceil(s.length / P_CHARS);
+const pWord = (s) => s.split(/\s+/).reduce((m, w) => Math.max(m, w.length), 0);
+const P_LABELS = PBTNS.map((b) => String(b.textContent).trim());
+ok('the preset row is four equal buttons and every label fits its column',
+   P_LABELS.every((s) => pLines(s) <= 2 && pWord(s) <= P_CHARS),
+   'column ' + Math.round(P_COL) + 'px = ' + P_CHARS + ' chars a line · '
+     + P_LABELS.map((s) => s + ' ' + pLines(s) + 'L/' + pWord(s) + 'w').join(' · '));
+/* and the CSS has to actually make them equal, on one line, two lines tall: the budget above assumes
+   a quarter apiece, which is only true if the row asks for it — `flex: 1 1 auto` from `.btns` would
+   size them to their labels and make the shared column a fiction */
+const P_ROW_RULE = (STYLE.match(/#profiles \{[^}]*\}/) || [''])[0];
+const P_BTN_RULE = (STYLE.match(/#profiles button \{[^}]*\}/) || [''])[0];
+ok('the preset buttons are equal quarters of one line, tall enough for two',
+   /flex-wrap: nowrap/.test(P_ROW_RULE) && /flex: 1 1 0/.test(P_BTN_RULE)
+     && /min-height: calc\(\d+(?:\.\d+)?em/.test(P_BTN_RULE),
+   'row ' + JSON.stringify(P_ROW_RULE.replace(/\s+/g, ' ')) + ' · button '
+     + JSON.stringify(P_BTN_RULE.replace(/\s+/g, ' ')));
+/* …and it leads the card, because picking a machine is the thing this card is for: a shortcut below
+   the three sliders it moves is one you find only after you have already hunted them */
+ok('the presets lead the engine card',
+   html.indexOf('>Engine<') < html.indexOf('id="profiles"')
+     && html.indexOf('id="profiles"') < html.indexOf('id="prefill"')
+     && html.indexOf('id="profiles"') < html.indexOf('id="latency"'),
+   'Engine → presets → prefill → decode → cache → latency');
+ok('a preset moves the two speeds and the wait, and nothing else',
+   P_UNTOUCHED === $('#jitter').value + '|' + $('#cache').checked + '|' + AS.config.curve.map((c) => c.ctx + ':' + c.mult).join(','),
+   'jitter, cache and curve still ' + P_UNTOUCHED);
+/* the point of a preset is that it is a faster or slower machine, so the pair has to arrive as one
+   on the clock too: a button that moves the fields and leaves the run the same length has written
+   nothing the model reads. local→API (fast) and local→ASIC are both strictly faster on any corpus;
+   `API` is not asserted, because a 3 s wait on every request can legitimately outweigh what its
+   prefill saves, and which way it lands is the comparison the page is for rather than a rule. */
+ok('a faster machine really shortens the run',
+   pDur.apifast < pDur.local && pDur.asic < pDur.local,
+   'local ' + pDur.local.toFixed(1) + 's → API (fast) ' + pDur.apifast.toFixed(1) + 's · ASIC '
+     + pDur.asic.toFixed(1) + 's · API ' + (pDur.api || 0).toFixed(1) + 's');
+/* and the pressed state is a read-out, not a stamp: it has to let go as soon as a field stops
+   matching, or the row claims a machine the page left two keystrokes ago */
+PBTNS[0].dispatch('click'); pump();
+const P_FIRST = PBTNS[0].dataset.profile;
+$('#decode').value = String(AS.profiles[P_FIRST].decode + 1);
+$('#decode').dispatch('input'); pump();
+ok('editing a speed takes the page off the preset',
+   pPressed().length === 0 && pPressed().indexOf(P_FIRST) === -1,
+   P_FIRST + ' was current after the click; now [' + pPressed().join(', ') + '] is');
+/* the ceiling on decode is the fastest preset, so the bound and the field have to reach it or the
+   button clamps into a machine that does not exist */
+const DK_MARKUP_MAX = parseFloat(((html.match(/<input\b[^>]*id="decode"[^>]*>/) || [''])[0]
+  .match(/\bmax="(\d+)"/) || [, ''])[1]);
+const DK_MAX = limitOf('decode', 'max');
+const DK_FASTEST = Math.max.apply(null, P_IDS.map((id) => AS.profiles[id].decode));
+ok('decode reaches its fastest preset, and markup and bounds agree on the ceiling',
+   DK_MARKUP_MAX === DK_MAX && DK_MAX >= DK_FASTEST,
+   'fastest preset ' + DK_FASTEST + ' tok/s · bound ' + DK_MAX + ' · field max ' + DK_MARKUP_MAX);
+for (const k of ['prefill', 'decode', 'latency']) {
+  $('#' + k).value = String(P_BEFORE[k]); $('#' + k).dispatch('change'); pump();
+}
 
 /* --- corpus sweep ---
    everything above holds for whichever scenario the URL happened to pick; the

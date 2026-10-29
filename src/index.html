@@ -67,6 +67,17 @@
 
     <div class="card">
       <h2>Engine</h2>
+      <!-- named profiles for everything the card holds: the two speeds below and the request wait
+           under that. They come first because that is the order the card is read in — pick a machine,
+           then adjust it — and because pressing one is what most people do with this card, not a
+           discovery they make after they have already set three sliders. The buttons are built from
+           PROFILES in the script, one source for the label, the note under it and the values written,
+           so this holds the heading and the row they land in. The heading is a group caption like
+           `contention` and carries the definition on hover the same way; it spends no rule above it,
+           because there is nothing above it to be set off from. -->
+      <div class="gsub"
+           title="A machine, as prefill speed, decode speed and request latency — the three settings each button writes, on its own note. The decay curve, the jitter and the prompt cache stay where they are. A button reads as current only while all three fields still match it.">engine presets</div>
+      <div class="btns" id="profiles"></div>
       <!-- the name is a caption, not a label pointing at the control: a browser suppresses the
            title tooltip on such a label, and that is exactly the text you hover to learn what a
            setting means. So the row carries the note once and everything inside it — caption,
@@ -78,7 +89,7 @@
         <input id="prefillRange" aria-label="prefill speed, as a slider" type="range" min="0" max="100" step="0.5">
       </div>
       <div class="ctl" title="Tokens per second while generating output: prose, chain of thought and tool-calls. Decode speed decays as the context grows, following the decay curve.">
-        <div class="row"><span class="cap" id="decodeName">decode speed</span><input id="decode" type="number" min="0" max="1000" step="5" aria-labelledby="decodeName"><span class="unit">tok/s</span></div>
+        <div class="row"><span class="cap" id="decodeName">decode speed</span><input id="decode" type="number" min="0" max="10000" step="5" aria-labelledby="decodeName"><span class="unit">tok/s</span></div>
         <input id="decodeRange" aria-label="decode speed, as a slider" type="range" min="0" max="100" step="0.5">
       </div>
       <div class="row" title="Cache prompt tokens between requests, so the engine does not have to re-process them on every turn. The cache is invalidated by a context compaction."><span class="cap" id="cacheName">prompt cache</span><input id="cache" type="checkbox" aria-labelledby="cacheName"><span class="unit"></span></div>
@@ -148,6 +159,7 @@
     <ul class="specs">
       <li><b>prefill speed</b> — rate at which the engine can read the prompt and context.</li>
       <li><b>decode speed</b> — rate at which the engine can generate and stream the answer.</li>
+      <li><b>engine presets</b> — a named machine as prefill, decode and request latency.</li>
       <li><b>prompt caching</b> — whether the engine re-reads the prompt and context every turn, or
         reuses them.</li>
       <li><b>request latency</b> — how long the request waits before the engine starts processing it.</li>

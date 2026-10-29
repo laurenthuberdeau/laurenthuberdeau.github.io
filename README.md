@@ -49,7 +49,9 @@ open index.html
 
 The defaults are a local-inference profile — 1500 tok/s prefill, 50 tok/s decode, prompt cache
 on — which makes the `long-log` corpus a three minute run at 1× playback, or seven and a half
-with the cache unticked. Add `speed=4` for a quicker look, or `session=greenfield` for a
+with the cache unticked. The engine card also carries four presets — `local`, `API`,
+`API (fast)`, `ASIC` — for the machines people actually run against, see [Engine presets](#engine-presets).
+Add `speed=4` for a quicker look, or `session=greenfield` for a
 small-context one.
 
 The page opens parked at zero rather than running at you: the transcript, the summary and the
@@ -281,8 +283,17 @@ remember. The split is measured from the timeline, so it always describes the ru
 Every row has a hover note — the cursor goes to `help` over the card — because the panel is where these
 definitions live: which tokens each rate counts, what the cache does and does not make free, and
 why the phases need the turn gaps to add up to the clock. Then the panel holds the engine
-card — throughput, the prompt cache toggle, and contention (the request wait) as a group under
-the same heading. Every control in it carries a **hover note of its own**, the same way the
+card, which **opens** with the preset row — a machine as prefill, decode and request latency — and
+then the two speeds, the prompt cache toggle, and contention (the
+request wait) as a group under the same heading. The presets lead the card because picking a machine
+is what the card is for, and a shortcut sitting below the three sliders it moves is one you find only
+after you have already hunted them. It is a group heading and buttons in the same idiom as
+`contention`, and the pressed button is a read-out rather than a stamp: it marks
+the machine all three of its fields still sit on, so a slider moved afterwards leaves none marked.
+The labels are names alone — `local`, `API`, `API (fast)`, `ASIC` — four equal quarters of the 372px
+panel on one line, each button two lines tall so the longest name wraps inside its column rather than
+widening it,
+and what each one sets is on its hover note, where the page puts anything needing a unit. Every control in it carries a **hover note of its own**, the same way the
 summary rows do — one note per row, on the row itself, so the name, the field, the unit and the
 slider all answer the same hover by inheritance. The name is a caption rather than a label
 pointing at the control, because a browser suppresses the title tooltip on exactly that element,
@@ -320,13 +331,35 @@ Bands are sized by duration, so an 85 s prefill on a 175 s run claims just under
 and the bar shows where a run actually goes; hover a band for its phase, request number, and
 own duration.
 
+## Engine presets
+
+The engine card carries four named machines, because the settings that describe a device only make
+sense as a set — the same prefill speed is a different machine depending on the wait in front of
+each request, and hunting that across three log sliders is not a way to compare devices. A preset
+writes **prefill, decode and request latency**, in tok/s and ms:
+
+| preset      | prefill | decode | request latency | reads as                                          |
+|-------------|---------|--------|-----------------|---------------------------------------------------|
+| `local`     | 500     | 50     | 100 ms          | a model on your own hardware                       |
+| `API`       | 10k     | 75     | 3 s             | a hosted frontier API — fast reads, a round trip on every request |
+| `API (fast)`| 10k     | 250    | 1 s             | the fast API tier, a DeepSeek V4 Flash class model — fast reads and a much faster stream |
+| `ASIC`      | 20k     | 10k    | 500 ms          | fixed-weight inference silicon, where the run becomes tool-bound |
+
+The decay curve, the jitter and the prompt cache are **not** part of a preset: they belong to the
+deployment rather than to the hardware, so pressing one leaves them where you had them. A preset is
+a shortcut rather than a mode — it writes the fields like any typed value, nothing is remembered,
+and the button reads as current only while all three fields still match it, so moving a slider takes
+the page off the machine it names. That is also why there is no `profile` parameter below: a link
+copied after a preset is pressed carries `prefill`, `decode` and `latency` and replays identically
+without knowing a preset was ever touched.
+
 ## Query parameters
 
 | parameter             | meaning                                             |
 |-----------------------|-----------------------------------------------------|
 | `session`             | any scenario id — `greenfield`, `bug-hunt`, `long-log`, `deep-fix`, `sweep`, `oncall`, `migration`, `refactor`, `doc`, `repro`, `audit` |
 | `prefill`             | prefill speed in tok/s, `50`–`100000` — the floor is a laptop doing something else, not a typo |
-| `decode`              | decode speed in tok/s, before the curve, `1`–`1000`    |
+| `decode`              | decode speed in tok/s, before the curve, `1`–`10000` — the ceiling is the fastest preset |
 | `cache`               | prompt cache, `1` on (default) or `0` off            |
 | `latency`             | queue wait in front of each request, in ms, `0`–`120000` |
 | `jitter`              | ± jitter on that wait in ms, `0`–`60000`, drawn from a fixed seed  |
@@ -348,7 +381,18 @@ is 100k.
 ## Tests
 
 `tools/selftest.mjs` runs the page script in node against a small DOM shim, sweeping the
-timeline and firing the transport, keyboard, settings, curve editor, and seek handlers. It boots
+timeline and firing the transport, keyboard, settings, engine preset, curve editor, and seek
+handlers. A preset is the one place the panel can put a number in the model that no field was asked
+for, so every button is clicked and its three settings read back twice — from the model and from the
+field the reader sees — while the jitter, the cache and the curve are compared before and after to
+prove a preset touches only what it names. The label is the machine's name alone, so the hover note
+is the only place the page tells a reader what a button sets: that hand-written prose is read back —
+"10k tok/s prefill", "3s request latency" — and held to the values behind the button, because a note
+that drifted is a machine the panel promises and the run does not deliver. The row is also held to
+the width the CSS gives it — four equal columns of the fixed panel, each label fitting two lines of its
+column and no word longer than one — and to the card's order, so the presets stay
+at its head; and the pressed state has to let go the moment a field stops matching it.
+It boots
 the guide first, because that is what the page shows first: it must open on load and stay down when
 `intro=0` or `autoplay` says to, offer exactly the two shapes it claims (the decode-heavy card has
 to be dominated by generating and the prefill-heavy one by reading, measured on the corpus, or the

@@ -220,6 +220,10 @@
     color: var(--fg-dimmer); font-size: 10px; letter-spacing: .1em; text-transform: uppercase;
     cursor: help;
   }
+  /* …unless it opens the card, where the rule would sit under the card's own heading and draw a
+     second one: the engine presets are the first thing in the engine card, and there is nothing
+     above them to be set off from. */
+  .card > .gsub:first-of-type { margin-top: 0; padding-top: 0; border-top: 0; }
   table { width: 100%; border-collapse: collapse; font-size: 11px; font-variant-numeric: tabular-nums; }
   th { text-align: left; color: var(--fg-dimmer); font-weight: 500; font-size: 10px; text-transform: uppercase; letter-spacing: .6px; padding: 2px 4px; }
   td { padding: 2px 4px; border-top: 1px solid var(--border); color: var(--fg-dim); }
@@ -242,6 +246,28 @@
   svg.chart circle:hover { fill: var(--accent); }
   .btns { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
   .btns button { flex: 1 1 auto; font-size: 11px; padding: 3px 6px; }
+  /* the engine presets double as a read-out: the pressed one is the profile the fields are on right
+     now, not the last button clicked. Same accent the page uses for state, no extra colour for it. */
+  .btns button[aria-current="true"] { border-color: var(--accent); background: var(--panel-2); color: var(--accent); }
+  /* The presets are a group of their own at the head of the card and the two speed rows below are
+     another, so they need a gap between them: with nothing under the buttons, the prefill field sat
+     right on top of them. Tighter than the 18px the `contention` group spends on its rule and
+     caption, because there is no heading here to breathe under. And on this row only — `.btns` is
+     also the curve card's last row, where a bottom margin would only thicken that card's padding. */
+  #profiles { flex-wrap: nowrap; margin-bottom: 12px; }
+  /* Four equal buttons, and two lines deep. Equal because these are four options rather than four
+     widths: `.btns` gives every button `flex: 1 1 auto`, which sizes them to their labels, so
+     `API (fast)` would claim more of the card than `local` and the row would read as four unrelated
+     boxes instead of one control. Each is therefore a quarter of the card and the long name wraps
+     inside its column — which is what the second line of height is for, so the wrap does not push one
+     button taller than its neighbours. `3.1em` is two lines of this row's 11px type at the body's
+     1.55 leading; the 8px is the padding (2 × 3) and border (2 × 1) every button already carries, so
+     a one-line label sits centred in exactly twice the height it needed. */
+  #profiles button {
+    flex: 1 1 0; min-width: 0; text-align: center; white-space: normal;
+    display: grid; place-items: center;
+    min-height: calc(3.1em + 8px);
+  }
   dl.summary { margin: 0; display: grid; grid-template-columns: 1fr auto; gap: 2px 8px; font-size: 11px; }
   dl.summary dt { color: var(--fg-dimmer); }
   dl.summary dd { margin: 0; text-align: right; color: var(--fg); font-variant-numeric: tabular-nums; }
