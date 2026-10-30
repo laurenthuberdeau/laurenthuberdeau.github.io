@@ -509,3 +509,36 @@ disagree, so a hand edit to the artifact is caught rather than quietly overwritt
 ```sh
 node tools/selftest.mjs index.html "?session=long-log&autoplay=0"
 ```
+
+## Publishing
+
+The page is served by GitHub Pages from this repository, which is the account's user site — it is
+named after the account rather than after the project — so it sits at the root of the domain and not
+under a path. That costs nothing to configure here: the artifact quotes no asset paths at all, so
+there is no base path to rewrite and `actions/configure-pages` is left out of the workflow on
+purpose.
+
+`.github/workflows/pages.yml` runs on a push to `master`, on a pull request against it, and by hand.
+Its first job is the two checks this file already documents, in the order that fails cheapest:
+
+```sh
+node tools/build.mjs --check   # the artifact is what src/ says it should be
+node tools/selftest.mjs        # the page, driven end to end
+```
+
+A hand edit to `index.html`, or an `src/` change that was never built, fails the first one, so the
+drift the build is arranged to hide stops at the gate instead of publishing and then vanishing on
+somebody's next build. On a pull request that is the whole story — checks and nothing more. Only
+`master` goes on to stage a directory holding `index.html` and deploy it through
+`actions/deploy-pages`, which is why the readme, the sources and the tools are not part of what the
+site serves. A deploy wants `pages: write` and `id-token: write` on the job and the `github-pages`
+environment, and the environment is created by the first run that asks for it.
+
+Two facts live outside version control and both have to hold. Settings → Pages → Source has to read
+*GitHub Actions* rather than *Deploy from a branch*, or the workflow publishes an artifact nothing
+reads. And Pages is public no matter what the repository is — a private repository still serves a
+public site, and the free plan needs a public repository to begin with — which is why the session
+captures in this directory are ignored rather than merely untracked: they are real transcripts, and
+`git add -A` is how a transcript ends up on a public domain. `.nojekyll` at the root is for the other
+source setting, since a branch deploy runs Jekyll and an artifact deploy never does; keeping the file
+means switching back to a branch would not put a Jekyll build between `src/` and the reader.

@@ -1,0 +1,74 @@
+# Publish the simulator to GitHub Pages.
+#
+# There is nothing to compile here that the repository does not already own: the artifact is
+# index.html, which tools/build.mjs writes from src/. So the workflow proves the artifact is the
+# current build and passes its selftest, stages nothing but that one file, and deploys it.
+#
+# Outside this file, Settings -> Pages -> Source has to read "GitHub Actions", or the workflow
+# builds a site nobody publishes.
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  # what actions/deploy-pages needs to mint its deployment token
+  pages: write
+  id-token: write
+
+# One deploy at a time, and never cancel one that is already partway through.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # The artifact is generated, so a hand edit to it — or an src/ change that was never
+      # built — fails here instead of reaching the site and vanishing on the next build.
+      - name: index.html is the current build of src/
+        run: node tools/build.mjs --check
+
+      - name: Selftest
+        run: node tools/selftest.mjs
+
+      # Stage only what the site is. The readme, src/ and tools/ stay in the repository and
+      # off the domain. configure-pages is deliberately absent: the page ships no external
+      # assets, so there is no base path for it to rewrite.
+      - name: Stage the site
+        if: github.ref == 'refs/heads/master'
+        run: |
+          mkdir _site
+          cp index.html _site/index.html
+          cp .nojekyll _site/.nojekyll
+
+      - name: Upload Pages artifact
+        if: github.ref == 'refs/heads/master'
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: _site
+
+  deploy:
+    # A pull request gets the checks, never a deployment.
+    if: github.ref == 'refs/heads/master'
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
